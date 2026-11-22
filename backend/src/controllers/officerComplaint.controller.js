@@ -1,6 +1,16 @@
 
 import mongoose from "mongoose";
+import fs from "node:fs/promises";
+import path from "node:path";
+import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
+
 import Complaint from "../models/Complaint.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const MAX_EVIDENCE_FILES = 5;
 
 // GET /api/v1/officer/complaints
 export const getAssignedComplaints = async (req, res, next) => {
@@ -14,6 +24,7 @@ export const getAssignedComplaints = async (req, res, next) => {
       const allowedStatuses = [
         "ASSIGNED",
         "IN_PROGRESS",
+        "PENDING_VERIFICATION",
         "RESOLVED",
         "REOPENED",
       ];
@@ -72,7 +83,9 @@ export const getAssignedComplaintById = async (
       .populate("administrativeOffice", "name code")
       .populate("prabhag", "name number")
       .populate("zone", "name code")
-      .populate("statusHistory.changedBy", "name role");
+      .populate("statusHistory.changedBy", "name role")
+      .populate("resolution.submittedBy", "name role")
+      .populate("resolution.reviewedBy", "name role");
 
     if (!complaint) {
       return res.status(404).json({
@@ -96,9 +109,16 @@ export const updateAssignedComplaintStatus = async (
   res,
   next
 ) => {
+  const savedFilePaths = [];
+
   try {
-    const { status, note, resolutionDescription, evidence } =
-      req.body;
+    const {
+      status,
+      note,
+      resolutionDescription,
+    } = req.body;
+
+    const uploadedImages = req.verifiedImages || [];
 
     if (!mongoose.isValidObjectId(req.params.id)) {
       return res.status(400).json({
@@ -107,11 +127,11 @@ export const updateAssignedComplaintStatus = async (
       });
     }
 
-    if (!["IN_PROGRESS", "RESOLVED"].includes(status)) {
+    if (!["IN_PROGRESS", "PENDING_VERIFICATION"].includes(status)) {
       return res.status(400).json({
         success: false,
         message:
-          "Officer can only move a complaint to IN_PROGRESS or RESOLVED.",
+          "Officer can only move a complaint to IN_PROGRESS or submit it for PENDING_VERIFICATION.",
       });
     }
 
@@ -122,7 +142,15 @@ export const updateAssignedComplaintStatus = async (
       });
     }
 
-    if (status === "RESOLVED") {
+    if (status === "IN_PROGRESS" && uploadedImages.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Evidence images can only be uploaded when submitting a resolution.",
+      });
+    }
+
+    if (status === "PENDING_VERIFICATION") {
       if (
         typeof resolutionDescription !== "string" ||
         !resolutionDescription.trim()
@@ -133,28 +161,22 @@ export const updateAssignedComplaintStatus = async (
         });
       }
 
+      if (resolutionDescription.trim().length > 3000) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Resolution description cannot exceed 3000 characters.",
+        });
+      }
+
       if (
-        !Array.isArray(evidence) ||
-        evidence.length === 0 ||
-        evidence.some(
-          (item) =>
-            !item ||
-            typeof item.url !== "string" ||
-            !item.url.trim() ||
-            !["IMAGE", "VIDEO"].includes(item.mediaType)
-        )
+        uploadedImages.length === 0 ||
+        uploadedImages.length > MAX_EVIDENCE_FILES
       ) {
         return res.status(400).json({
           success: false,
           message:
-            "Provide at least one valid resolution evidence item with url and mediaType.",
-        });
-      }
-
-      if (evidence.length > 5) {
-        return res.status(400).json({
-          success: false,
-          message: "Maximum 5 resolution evidence files are allowed.",
+            "Upload between 1 and 5 genuine resolution evidence images.",
         });
       }
     }
@@ -172,12 +194,11 @@ export const updateAssignedComplaintStatus = async (
       });
     }
 
-    // Only allow valid status transitions.
     if (
       status === "IN_PROGRESS" &&
       complaint.status !== "ASSIGNED"
     ) {
-      return res.status(400).json({
+      return res.status(409).json({
         success: false,
         message:
           "Only ASSIGNED complaints can be moved to IN_PROGRESS.",
@@ -185,15 +206,47 @@ export const updateAssignedComplaintStatus = async (
     }
 
     if (
-      status === "RESOLVED" &&
+      status === "PENDING_VERIFICATION" &&
       complaint.status !== "IN_PROGRESS"
     ) {
-      return res.status(400).json({
+      return res.status(409).json({
         success: false,
         message:
-          "Only IN_PROGRESS complaints can be resolved.",
+          "Only IN_PROGRESS complaints can be submitted for verification.",
       });
     }
+
+    let uploadedEvidence = [];
+
+    if (status === "PENDING_VERIFICATION") {
+      const uploadsDirectory = path.resolve(
+        __dirname,
+        "../../uploads/resolutions"
+      );
+
+      await fs.mkdir(uploadsDirectory, { recursive: true });
+
+      for (const image of uploadedImages) {
+        if (!image?.buffer || !image?.extension) {
+          throw new Error(
+            "A verified resolution image is missing its file data."
+          );
+        }
+
+        const filename = `${randomUUID()}.${image.extension}`;
+        const filePath = path.join(uploadsDirectory, filename);
+
+        await fs.writeFile(filePath, image.buffer);
+        savedFilePaths.push(filePath);
+
+        uploadedEvidence.push({
+          url: `${req.protocol}://${req.get("host")}/uploads/resolutions/${filename}`,
+          mediaType: "IMAGE",
+        });
+      }
+    }
+
+    const changedAt = new Date();
 
     complaint.status = status;
 
@@ -204,14 +257,21 @@ export const updateAssignedComplaintStatus = async (
         note?.trim() ||
         (status === "IN_PROGRESS"
           ? "Officer started working on the complaint."
-          : "Officer resolved the complaint."),
+          : "Officer submitted resolution details and image evidence for administrator verification."),
+      changedAt,
     });
 
-    if (status === "RESOLVED") {
+    if (status === "PENDING_VERIFICATION") {
       complaint.resolution = {
         description: resolutionDescription.trim(),
-        evidence,
-        resolvedAt: new Date(),
+        evidence: uploadedEvidence,
+        reviewStatus: "PENDING_VERIFICATION",
+        submittedBy: req.user._id,
+        submittedAt: changedAt,
+        reviewedBy: null,
+        reviewedAt: null,
+        reviewNote: "",
+        resolvedAt: null,
       };
     }
 
@@ -226,14 +286,27 @@ export const updateAssignedComplaintStatus = async (
       .populate("department", "name code")
       .populate("administrativeOffice", "name code")
       .populate("prabhag", "name number")
-      .populate("zone", "name code");
+      .populate("zone", "name code")
+      .populate("statusHistory.changedBy", "name role")
+      .populate("resolution.submittedBy", "name role")
+      .populate("resolution.reviewedBy", "name role");
 
     return res.status(200).json({
       success: true,
-      message: `Complaint status updated to ${status}.`,
+      message:
+        status === "PENDING_VERIFICATION"
+          ? "Resolution and evidence submitted for administrator verification."
+          : "Complaint moved to In Progress.",
       complaint: updatedComplaint,
     });
   } catch (error) {
+    // Remove newly written evidence if the database update fails.
+    await Promise.all(
+      savedFilePaths.map((filePath) =>
+        fs.unlink(filePath).catch(() => {})
+      )
+    );
+
     next(error);
   }
 };

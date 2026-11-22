@@ -41,6 +41,7 @@ const STATUS_LABELS = {
   UNDER_REVIEW: "Under Review",
   ASSIGNED: "Assigned",
   IN_PROGRESS: "In Progress",
+  PENDING_VERIFICATION: "Pending Verification",
   RESOLVED: "Resolved",
   REJECTED: "Rejected",
   REOPENED: "Reopened",
@@ -87,6 +88,11 @@ const NAV_ITEMS = [
     id: "assignments",
     label: "Assignment Review",
     icon: UserCheck,
+  },
+  {
+    id: "officers",
+    label: "Officer Management",
+    icon: Users,
   },
 ];
 
@@ -570,6 +576,135 @@ function ComplaintTable({
   );
 }
 
+
+/* =========================================================
+   OFFICER MANAGEMENT ROW
+========================================================= */
+
+function OfficerManagementRow({
+  officer,
+  departments,
+  offices,
+  busy,
+  onSave,
+  onToggle,
+}) {
+  const [departmentId, setDepartmentId] = useState(
+    getId(officer.department)
+  );
+  const [officeId, setOfficeId] = useState(
+    getId(officer.administrativeOffice)
+  );
+
+  useEffect(() => {
+    setDepartmentId(getId(officer.department));
+    setOfficeId(getId(officer.administrativeOffice));
+  }, [officer.department, officer.administrativeOffice]);
+
+  const changed =
+    departmentId !== getId(officer.department) ||
+    officeId !== getId(officer.administrativeOffice);
+
+  return (
+    <tr>
+      <td>
+        <strong>{officer.name || "—"}</strong>
+        <div className="officer-management-muted">
+          {officer.email || "—"}
+        </div>
+        <div className="officer-management-muted">
+          {officer.phone || "No phone"}
+        </div>
+      </td>
+
+      <td>
+        <select
+          value={departmentId}
+          onChange={(event) =>
+            setDepartmentId(event.target.value)
+          }
+          disabled={busy}
+          aria-label={`Department for ${officer.name}`}
+        >
+          <option value="">Select department</option>
+          {departments.map((department) => (
+            <option
+              key={department._id}
+              value={department._id}
+            >
+              {department.name}
+            </option>
+          ))}
+        </select>
+      </td>
+
+      <td>
+        <select
+          value={officeId}
+          onChange={(event) =>
+            setOfficeId(event.target.value)
+          }
+          disabled={busy}
+          aria-label={`Office for ${officer.name}`}
+        >
+          <option value="">Select office</option>
+          {offices.map((office) => (
+            <option key={office._id} value={office._id}>
+              {office.name}
+            </option>
+          ))}
+        </select>
+      </td>
+
+      <td>
+        <span
+          className={`officer-management-status ${
+            officer.isActive
+              ? "is-active"
+              : "is-inactive"
+          }`}
+        >
+          {officer.isActive ? "Active" : "Inactive"}
+        </span>
+      </td>
+
+      <td>
+        <div className="officer-management-actions">
+          <button
+            type="button"
+            className="admin-assign-button"
+            disabled={
+              busy ||
+              !changed ||
+              !departmentId ||
+              !officeId
+            }
+            onClick={() =>
+              onSave(officer._id, {
+                departmentId,
+                officeId,
+              })
+            }
+          >
+            Save
+          </button>
+
+          <button
+            type="button"
+            className="admin-cancel-button"
+            disabled={busy}
+            onClick={() =>
+              onToggle(officer._id, !officer.isActive)
+            }
+          >
+            {officer.isActive ? "Deactivate" : "Activate"}
+          </button>
+        </div>
+      </td>
+    </tr>
+  );
+}
+
 /* =========================================================
    ADMIN DASHBOARD
 ========================================================= */
@@ -625,6 +760,18 @@ export default function AdminDashboard({
     useState(false);
 
   const [detailError, setDetailError] =
+    useState("");
+
+  const [resolutionReviewNote, setResolutionReviewNote] =
+    useState("");
+
+  const [resolutionReviewLoading, setResolutionReviewLoading] =
+    useState(false);
+
+  const [resolutionReviewError, setResolutionReviewError] =
+    useState("");
+
+  const [resolutionReviewSuccess, setResolutionReviewSuccess] =
     useState("");
 
   const [previewImage, setPreviewImage] =
@@ -688,6 +835,33 @@ export default function AdminDashboard({
   const [assignmentSuccess, setAssignmentSuccess] =
     useState("");
 
+  /* -------------------------------------------------------
+     OFFICER MANAGEMENT STATE
+  ------------------------------------------------------- */
+
+  const [managedOfficers, setManagedOfficers] = useState([]);
+  const [officerManagementLoading, setOfficerManagementLoading] =
+    useState(false);
+  const [officerManagementError, setOfficerManagementError] =
+    useState("");
+  const [officerManagementSuccess, setOfficerManagementSuccess] =
+    useState("");
+  const [officerManagementBusyId, setOfficerManagementBusyId] =
+    useState("");
+  const [officerStatusFilter, setOfficerStatusFilter] =
+    useState("ALL");
+
+  const [newOfficer, setNewOfficer] = useState({
+    name: "",
+    email: "",
+    phone: "",
+    password: "",
+    departmentId: "",
+    officeId: "",
+  });
+  const [createOfficerLoading, setCreateOfficerLoading] =
+    useState(false);
+
   /* =======================================================
      FETCH DASHBOARD
   ======================================================= */
@@ -746,6 +920,89 @@ export default function AdminDashboard({
   };
 
   /* =======================================================
+     ADMIN RESOLUTION REVIEW
+  ======================================================= */
+
+  const handleResolutionReview = async (decision) => {
+    if (!selectedComplaint?._id) {
+      setResolutionReviewError("No complaint is selected.");
+      return;
+    }
+
+    const resolution = selectedComplaint.resolution;
+
+    if (
+      selectedComplaint.status !== "PENDING_VERIFICATION" ||
+      resolution?.reviewStatus !== "PENDING_VERIFICATION"
+    ) {
+      setResolutionReviewError(
+        "This resolution is no longer awaiting verification. Refresh the complaint before reviewing it."
+      );
+      return;
+    }
+
+    const note = resolutionReviewNote.trim();
+
+    if (decision === "REJECT" && !note) {
+      setResolutionReviewError(
+        "A rejection reason is required."
+      );
+      return;
+    }
+
+    if (!["APPROVE", "REJECT"].includes(decision)) {
+      setResolutionReviewError("Invalid review decision.");
+      return;
+    }
+
+    try {
+      setResolutionReviewLoading(true);
+      setResolutionReviewError("");
+      setResolutionReviewSuccess("");
+
+      await adminAPI.reviewResolution(
+        selectedComplaint._id,
+        {
+          decision,
+          note,
+        }
+      );
+
+      // Fetch the persisted record rather than relying on the
+      // response or keeping stale modal data.
+      const response = await adminAPI.getComplaints();
+      const records = getResponseArray(response);
+
+      setComplaints(records);
+      setComplaintsLoaded(true);
+
+      const updatedComplaint = records.find(
+        (item) => item._id === selectedComplaint._id
+      );
+
+      if (updatedComplaint) {
+        setSelectedComplaint(updatedComplaint);
+      } else {
+        setSelectedComplaint(null);
+      }
+
+      setResolutionReviewNote("");
+      setResolutionReviewSuccess(
+        decision === "APPROVE"
+          ? "Resolution approved. Complaint marked as resolved."
+          : "Resolution rejected. Complaint returned to the officer."
+      );
+    } catch (err) {
+      setResolutionReviewError(
+        err.response?.data?.message ||
+          "Unable to submit the resolution review."
+      );
+    } finally {
+      setResolutionReviewLoading(false);
+    }
+  };
+
+  /* =======================================================
      OPEN COMPLAINT DETAILS
   ======================================================= */
 
@@ -755,6 +1012,9 @@ export default function AdminDashboard({
       setDetailError("");
       setSelectedComplaint(null);
       setPreviewImage("");
+      setResolutionReviewNote("");
+      setResolutionReviewError("");
+      setResolutionReviewSuccess("");
 
       let complaint = complaints.find(
         (item) => item._id === complaintId
@@ -1254,6 +1514,171 @@ export default function AdminDashboard({
     }
   };
 
+
+  /* =======================================================
+     OFFICER MANAGEMENT ACTIONS
+  ======================================================= */
+
+  const fetchManagedOfficers = async () => {
+    try {
+      setOfficerManagementLoading(true);
+      setOfficerManagementError("");
+
+      const response = await adminAPI.getOfficers();
+      setManagedOfficers(getResponseArray(response));
+    } catch (err) {
+      setOfficerManagementError(
+        err.response?.data?.message ||
+          "Unable to load PMC officers."
+      );
+    } finally {
+      setOfficerManagementLoading(false);
+    }
+  };
+
+  const loadOfficerManagementData = async () => {
+    try {
+      setOfficerManagementError("");
+
+      const [departmentResponse, officeResponse] =
+        await Promise.all([
+          adminAPI.getDepartments(),
+          geographyAPI.getOffices(),
+        ]);
+
+      const departmentRecords =
+        getResponseArray(departmentResponse);
+      const officeRecords =
+        getResponseArray(officeResponse);
+
+      setDepartments(departmentRecords);
+      setOffices(officeRecords);
+
+      await fetchManagedOfficers();
+    } catch (err) {
+      setOfficerManagementError(
+        err.response?.data?.message ||
+          "Unable to load departments and administrative offices."
+      );
+    }
+  };
+
+  const handleCreateOfficer = async (event) => {
+    event.preventDefault();
+
+    try {
+      setCreateOfficerLoading(true);
+      setOfficerManagementError("");
+      setOfficerManagementSuccess("");
+
+      await adminAPI.createOfficer(newOfficer);
+
+      setNewOfficer({
+        name: "",
+        email: "",
+        phone: "",
+        password: "",
+        departmentId: "",
+        officeId: "",
+      });
+
+      setOfficerManagementSuccess(
+        "Officer account created successfully."
+      );
+
+      await fetchManagedOfficers();
+    } catch (err) {
+      setOfficerManagementError(
+        err.response?.data?.message ||
+          "Unable to create officer account."
+      );
+    } finally {
+      setCreateOfficerLoading(false);
+    }
+  };
+
+  const handleUpdateOfficerAssignment = async (
+    officerId,
+    assignment
+  ) => {
+    try {
+      setOfficerManagementBusyId(officerId);
+      setOfficerManagementError("");
+      setOfficerManagementSuccess("");
+
+      await adminAPI.updateOfficerAssignment(
+        officerId,
+        assignment
+      );
+
+      setOfficerManagementSuccess(
+        "Officer department and office updated."
+      );
+
+      await fetchManagedOfficers();
+    } catch (err) {
+      setOfficerManagementError(
+        err.response?.data?.message ||
+          "Unable to update officer assignment."
+      );
+    } finally {
+      setOfficerManagementBusyId("");
+    }
+  };
+
+  const handleToggleOfficerStatus = async (
+    officerId,
+    isActive
+  ) => {
+    const action = isActive ? "activate" : "deactivate";
+
+    if (
+      !window.confirm(
+        `Are you sure you want to ${action} this officer?`
+      )
+    ) {
+      return;
+    }
+
+    try {
+      setOfficerManagementBusyId(officerId);
+      setOfficerManagementError("");
+      setOfficerManagementSuccess("");
+
+      await adminAPI.updateOfficerStatus(
+        officerId,
+        isActive
+      );
+
+      setOfficerManagementSuccess(
+        `Officer ${isActive ? "activated" : "deactivated"} successfully.`
+      );
+
+      await fetchManagedOfficers();
+    } catch (err) {
+      setOfficerManagementError(
+        err.response?.data?.message ||
+          "Unable to update officer status."
+      );
+    } finally {
+      setOfficerManagementBusyId("");
+    }
+  };
+
+  const filteredManagedOfficers = managedOfficers.filter(
+    (officer) => {
+      if (officerStatusFilter === "ACTIVE") {
+        return officer.isActive === true;
+      }
+
+      if (officerStatusFilter === "INACTIVE") {
+        return officer.isActive === false;
+      }
+
+      return true;
+    }
+  );
+
   /* =======================================================
      INITIAL DATA
   ======================================================= */
@@ -1268,6 +1693,10 @@ export default function AdminDashboard({
       activePage === "assignments"
     ) {
       fetchComplaints();
+    }
+
+    if (activePage === "officers") {
+      loadOfficerManagementData();
     }
   }, [activePage]);
 
@@ -1958,6 +2387,341 @@ export default function AdminDashboard({
                     onAssign={openAssignment}
                     showAssignmentAction
                   />
+                )}
+              </section>
+            </>
+          )}
+
+
+          {/* OFFICER MANAGEMENT PAGE */}
+
+          {activePage === "officers" && (
+            <>
+              <div className="admin-welcome">
+                <div>
+                  <span className="admin-eyebrow">
+                    PUNE MUNICIPAL CORPORATION
+                  </span>
+
+                  <h1>Officer Management</h1>
+
+                  <p>
+                    Create PMC officer accounts and maintain
+                    their department, administrative office
+                    and account status.
+                  </p>
+                </div>
+
+                <button
+                  className="admin-refresh-button"
+                  onClick={loadOfficerManagementData}
+                  disabled={
+                    officerManagementLoading ||
+                    createOfficerLoading
+                  }
+                >
+                  <RefreshCw
+                    size={17}
+                    className={
+                      officerManagementLoading
+                        ? "admin-spinning"
+                        : ""
+                    }
+                  />
+                  {officerManagementLoading
+                    ? "Refreshing..."
+                    : "Refresh"}
+                </button>
+              </div>
+
+              {officerManagementError && (
+                <div className="admin-inline-error">
+                  {officerManagementError}
+                </div>
+              )}
+
+              {officerManagementSuccess && (
+                <div className="admin-success-message">
+                  <CheckCircle2 size={17} />
+                  {officerManagementSuccess}
+                  <button
+                    onClick={() =>
+                      setOfficerManagementSuccess("")
+                    }
+                    aria-label="Dismiss message"
+                  >
+                    <X size={15} />
+                  </button>
+                </div>
+              )}
+
+              <section className="admin-panel officer-management-create">
+                <div className="admin-panel-heading">
+                  <div>
+                    <h3>Create Officer Account</h3>
+                    <p>
+                      New accounts are created as active PMC
+                      officers under the selected department
+                      and administrative office.
+                    </p>
+                  </div>
+                  <UserPlus size={21} />
+                </div>
+
+                <form onSubmit={handleCreateOfficer}>
+                  <div className="officer-management-form-grid">
+                    <div className="admin-form-field">
+                      <label htmlFor="new-officer-name">
+                        Full Name
+                      </label>
+                      <input
+                        id="new-officer-name"
+                        value={newOfficer.name}
+                        onChange={(event) =>
+                          setNewOfficer((current) => ({
+                            ...current,
+                            name: event.target.value,
+                          }))
+                        }
+                        minLength={2}
+                        required
+                        autoComplete="name"
+                        disabled={createOfficerLoading}
+                        placeholder="Officer full name"
+                      />
+                    </div>
+
+                    <div className="admin-form-field">
+                      <label htmlFor="new-officer-email">
+                        Email Address
+                      </label>
+                      <input
+                        id="new-officer-email"
+                        type="email"
+                        value={newOfficer.email}
+                        onChange={(event) =>
+                          setNewOfficer((current) => ({
+                            ...current,
+                            email: event.target.value,
+                          }))
+                        }
+                        required
+                        autoComplete="off"
+                        disabled={createOfficerLoading}
+                        placeholder="officer@pmc.gov.in"
+                      />
+                    </div>
+
+                    <div className="admin-form-field">
+                      <label htmlFor="new-officer-phone">
+                        Phone Number
+                      </label>
+                      <input
+                        id="new-officer-phone"
+                        type="tel"
+                        value={newOfficer.phone}
+                        onChange={(event) =>
+                          setNewOfficer((current) => ({
+                            ...current,
+                            phone: event.target.value,
+                          }))
+                        }
+                        autoComplete="tel"
+                        disabled={createOfficerLoading}
+                        placeholder="Optional"
+                      />
+                    </div>
+
+                    <div className="admin-form-field">
+                      <label htmlFor="new-officer-password">
+                        Initial Password
+                      </label>
+                      <input
+                        id="new-officer-password"
+                        type="password"
+                        value={newOfficer.password}
+                        onChange={(event) =>
+                          setNewOfficer((current) => ({
+                            ...current,
+                            password: event.target.value,
+                          }))
+                        }
+                        minLength={8}
+                        required
+                        autoComplete="new-password"
+                        disabled={createOfficerLoading}
+                        placeholder="Minimum 8 characters"
+                      />
+                    </div>
+
+                    <div className="admin-form-field">
+                      <label htmlFor="new-officer-department">
+                        Department
+                      </label>
+                      <select
+                        id="new-officer-department"
+                        value={newOfficer.departmentId}
+                        onChange={(event) =>
+                          setNewOfficer((current) => ({
+                            ...current,
+                            departmentId: event.target.value,
+                          }))
+                        }
+                        required
+                        disabled={
+                          createOfficerLoading ||
+                          departments.length === 0
+                        }
+                      >
+                        <option value="">
+                          Select department
+                        </option>
+                        {departments.map((department) => (
+                          <option
+                            key={department._id}
+                            value={department._id}
+                          >
+                            {department.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="admin-form-field">
+                      <label htmlFor="new-officer-office">
+                        Administrative Office
+                      </label>
+                      <select
+                        id="new-officer-office"
+                        value={newOfficer.officeId}
+                        onChange={(event) =>
+                          setNewOfficer((current) => ({
+                            ...current,
+                            officeId: event.target.value,
+                          }))
+                        }
+                        required
+                        disabled={
+                          createOfficerLoading ||
+                          offices.length === 0
+                        }
+                      >
+                        <option value="">
+                          Select administrative office
+                        </option>
+                        {offices.map((office) => (
+                          <option
+                            key={office._id}
+                            value={office._id}
+                          >
+                            {office.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="officer-management-form-footer">
+                    <p>
+                      The password is used only to create the
+                      account and is not displayed in the officer
+                      list.
+                    </p>
+                    <button
+                      type="submit"
+                      className="admin-assign-button"
+                      disabled={
+                        createOfficerLoading ||
+                        !newOfficer.name.trim() ||
+                        !newOfficer.email.trim() ||
+                        newOfficer.password.length < 8 ||
+                        !newOfficer.departmentId ||
+                        !newOfficer.officeId
+                      }
+                    >
+                      {createOfficerLoading
+                        ? "Creating..."
+                        : "Create Officer"}
+                    </button>
+                  </div>
+                </form>
+              </section>
+
+              <section className="admin-panel officer-management-list">
+                <div className="admin-panel-heading">
+                  <div>
+                    <h3>PMC Officer Accounts</h3>
+                    <p>
+                      Update officer assignments or account
+                      status. Assignment eligibility requires
+                      an active officer in the exact department
+                      and office.
+                    </p>
+                  </div>
+
+                  <span>
+                    {filteredManagedOfficers.length} officers
+                  </span>
+                </div>
+
+                <div className="officer-management-toolbar">
+                  <label htmlFor="officer-status-filter">
+                    Account status
+                  </label>
+                  <select
+                    id="officer-status-filter"
+                    value={officerStatusFilter}
+                    onChange={(event) =>
+                      setOfficerStatusFilter(event.target.value)
+                    }
+                  >
+                    <option value="ALL">All officers</option>
+                    <option value="ACTIVE">Active</option>
+                    <option value="INACTIVE">Inactive</option>
+                  </select>
+                </div>
+
+                {officerManagementLoading ? (
+                  <div className="admin-loading-inline">
+                    <RefreshCw
+                      className="admin-spinning"
+                      size={20}
+                    />
+                    Loading PMC officers...
+                  </div>
+                ) : filteredManagedOfficers.length === 0 ? (
+                  <div className="admin-empty">
+                    No officers found for this filter.
+                  </div>
+                ) : (
+                  <div className="admin-table-wrapper">
+                    <table className="admin-table officer-management-table">
+                      <thead>
+                        <tr>
+                          <th>Officer</th>
+                          <th>Department</th>
+                          <th>Administrative Office</th>
+                          <th>Status</th>
+                          <th>Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredManagedOfficers.map((officer) => (
+                          <OfficerManagementRow
+                            key={officer._id}
+                            officer={officer}
+                            departments={departments}
+                            offices={offices}
+                            busy={
+                              officerManagementBusyId === officer._id
+                            }
+                            onSave={handleUpdateOfficerAssignment}
+                            onToggle={handleToggleOfficerStatus}
+                          />
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 )}
               </section>
             </>
@@ -2948,6 +3712,227 @@ export default function AdminDashboard({
                 )}
               </section>
             )}
+
+            {/* OFFICER RESOLUTION AND ADMIN VERIFICATION */}
+
+            <section className="admin-resolution-review">
+              <div className="admin-resolution-review-heading">
+                <div>
+                  <h3>Officer Resolution Submission</h3>
+                  <p>
+                    Review the officer's submitted work and evidence
+                    before confirming resolution.
+                  </p>
+                </div>
+
+                <span className={`admin-resolution-review-status ${
+                  selectedComplaint.resolution?.reviewStatus === "APPROVED"
+                    ? "is-approved"
+                    : selectedComplaint.resolution?.reviewStatus === "REJECTED"
+                      ? "is-rejected"
+                      : selectedComplaint.resolution?.reviewStatus === "PENDING_VERIFICATION"
+                        ? "is-pending"
+                        : ""
+                }`}>
+                  {(selectedComplaint.resolution?.reviewStatus || "NOT_SUBMITTED")
+                    .replaceAll("_", " ")}
+                </span>
+              </div>
+
+              {selectedComplaint.resolution?.description ? (
+                <>
+                  <div className="admin-resolution-meta">
+                    <div>
+                      <strong>Submitted by</strong>
+                      <p>
+                        {selectedComplaint.resolution.submittedBy?.name ||
+                          "Officer information unavailable"}
+                      </p>
+                      {selectedComplaint.resolution.submittedBy?.email && (
+                        <small>
+                          {selectedComplaint.resolution.submittedBy.email}
+                        </small>
+                      )}
+                    </div>
+
+                    <div>
+                      <strong>Submitted at</strong>
+                      <p>
+                        {formatDate(
+                          selectedComplaint.resolution.submittedAt
+                        )}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="admin-resolution-description">
+                    <strong>Officer's resolution description</strong>
+                    <p>{selectedComplaint.resolution.description}</p>
+                  </div>
+
+                  <div className="admin-resolution-evidence">
+                    <strong>
+                      Resolution evidence (
+                      {selectedComplaint.resolution.evidence?.length || 0}
+                      /5)
+                    </strong>
+
+                    {Array.isArray(selectedComplaint.resolution.evidence) &&
+                    selectedComplaint.resolution.evidence.length > 0 ? (
+                      <div className="admin-resolution-evidence-grid">
+                        {selectedComplaint.resolution.evidence.map(
+                          (item, index) => (
+                            <a
+                              className="admin-resolution-evidence-item"
+                              key={item._id || item.url || index}
+                              href={getMediaUrl(item.url)}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              {item.mediaType === "IMAGE" ? (
+                                <img
+                                  src={getMediaUrl(item.url)}
+                                  alt={`Officer resolution evidence ${index + 1}`}
+                                />
+                              ) : (
+                                <span className="admin-resolution-file">
+                                  Open evidence {index + 1}
+                                </span>
+                              )}
+                              <small>
+                                {item.mediaType || "Evidence"} {index + 1}
+                              </small>
+                            </a>
+                          )
+                        )}
+                      </div>
+                    ) : (
+                      <p>No resolution evidence was submitted.</p>
+                    )}
+                  </div>
+
+                  {selectedComplaint.resolution?.reviewStatus === "PENDING_VERIFICATION" &&
+                   selectedComplaint.status === "PENDING_VERIFICATION" && (
+                    <div className="admin-resolution-actions">
+                      <label htmlFor="admin-resolution-review-note">
+                        Administrator review note
+                      </label>
+
+                      <textarea
+                        id="admin-resolution-review-note"
+                        value={resolutionReviewNote}
+                        onChange={(event) =>
+                          setResolutionReviewNote(event.target.value)
+                        }
+                        maxLength={1000}
+                        rows={4}
+                        placeholder="Enter a reason if rejecting. You may also add an approval note."
+                        disabled={resolutionReviewLoading}
+                      />
+
+                      <small>
+                        Required for rejection. Maximum 1000 characters.
+                      </small>
+
+                      {resolutionReviewError && (
+                        <p className="admin-resolution-message is-error">
+                          {resolutionReviewError}
+                        </p>
+                      )}
+
+                      {resolutionReviewSuccess && (
+                        <p className="admin-resolution-message is-success">
+                          {resolutionReviewSuccess}
+                        </p>
+                      )}
+
+                      <div className="admin-resolution-buttons">
+                        <button
+                          type="button"
+                          className="admin-resolution-reject"
+                          disabled={resolutionReviewLoading}
+                          onClick={() =>
+                            handleResolutionReview("REJECT")
+                          }
+                        >
+                          {resolutionReviewLoading
+                            ? "Submitting..."
+                            : "Reject and Return to Officer"}
+                        </button>
+
+                        <button
+                          type="button"
+                          className="admin-resolution-approve"
+                          disabled={resolutionReviewLoading}
+                          onClick={() =>
+                            handleResolutionReview("APPROVE")
+                          }
+                        >
+                          {resolutionReviewLoading
+                            ? "Submitting..."
+                            : "Approve Resolution"}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {selectedComplaint.resolution?.reviewStatus === "APPROVED" && (
+                    <div className="admin-resolution-final-status is-approved">
+                      <strong>Resolution approved</strong>
+                      <p>
+                        Reviewed by{" "}
+                        {selectedComplaint.resolution.reviewedBy?.name ||
+                          "Administrator"}
+                        {" · "}
+                        {formatDate(selectedComplaint.resolution.reviewedAt)}
+                      </p>
+                      {selectedComplaint.resolution.reviewNote && (
+                        <p>
+                          Administrator note:{" "}
+                          {selectedComplaint.resolution.reviewNote}
+                        </p>
+                      )}
+                    </div>
+                  )}
+
+                  {selectedComplaint.resolution?.reviewStatus === "REJECTED" && (
+                    <div className="admin-resolution-final-status is-rejected">
+                      <strong>Resolution rejected</strong>
+                      <p>
+                        Reviewed by{" "}
+                        {selectedComplaint.resolution.reviewedBy?.name ||
+                          "Administrator"}
+                        {" · "}
+                        {formatDate(selectedComplaint.resolution.reviewedAt)}
+                      </p>
+                      <p>
+                        Reason:{" "}
+                        {selectedComplaint.resolution.reviewNote ||
+                          "No review note recorded."}
+                      </p>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <p className="admin-resolution-empty">
+                  The officer has not submitted a resolution description yet.
+                </p>
+              )}
+
+              {resolutionReviewError &&
+                selectedComplaint.resolution?.reviewStatus !== "PENDING_VERIFICATION" && (
+                  <p className="admin-resolution-message is-error">
+                    {resolutionReviewError}
+                  </p>
+                )}
+
+              {resolutionReviewSuccess &&
+                selectedComplaint.resolution?.reviewStatus !== "PENDING_VERIFICATION" && (
+                  <p className="admin-resolution-message is-success">
+                    {resolutionReviewSuccess}
+                  </p>
+                )}
+            </section>
 
             {/* STATUS HISTORY */}
 

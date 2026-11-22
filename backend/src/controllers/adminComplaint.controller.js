@@ -108,6 +108,8 @@ export const getAdminComplaints = async (req, res, next) => {
       .populate("recommendedAssignment.prabhag", "name number")
       .populate("recommendedAssignment.officer", "name email")
       .populate("recommendedAssignment.reviewedBy", "name email")
+      .populate("resolution.submittedBy", "name email")
+      .populate("resolution.reviewedBy", "name email")
       .sort({ createdAt: -1 });
 
     const duplicateCounts = await Complaint.aggregate([

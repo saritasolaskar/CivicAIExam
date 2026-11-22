@@ -9,6 +9,10 @@ import {
   reviewDuplicateComplaint,
 } from "../controllers/adminComplaint.controller.js";
 
+import {
+  reviewComplaintResolution,
+} from "../controllers/resolutionReview.controller.js";
+
 const router = express.Router();
 
 router.use(protect, authorize("ADMIN"));
@@ -22,5 +26,10 @@ router.get("/", getAdminComplaints);
 router.patch("/:id/assign", assignComplaint);
 
 router.patch("/:id/duplicate-review", reviewDuplicateComplaint);
+
+router.patch(
+  "/:id/resolution-review",
+  reviewComplaintResolution
+);
 
 export default router;

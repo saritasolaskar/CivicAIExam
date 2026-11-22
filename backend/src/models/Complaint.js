@@ -1,4 +1,3 @@
-
 import mongoose from "mongoose";
 
 const COMPLAINT_STATUSES = [
@@ -6,6 +5,7 @@ const COMPLAINT_STATUSES = [
   "UNDER_REVIEW",
   "ASSIGNED",
   "IN_PROGRESS",
+  "PENDING_VERIFICATION",
   "RESOLVED",
   "REJECTED",
   "REOPENED",
@@ -251,7 +251,6 @@ const imagePotholeSchema = new mongoose.Schema(
   },
   { _id: false }
 );
-
 
 const imageGarbageDetectionSchema = new mongoose.Schema(
   {
@@ -658,11 +657,56 @@ const complaintSchema = new mongoose.Schema(
         type: String,
         default: "",
         trim: true,
+        maxlength: 3000,
       },
 
       evidence: {
         type: [mediaSchema],
         default: [],
+        validate: {
+          validator: (items) => items.length <= 5,
+          message: "Maximum 5 resolution evidence files are allowed.",
+        },
+      },
+
+      reviewStatus: {
+        type: String,
+        enum: [
+          "NOT_SUBMITTED",
+          "PENDING_VERIFICATION",
+          "APPROVED",
+          "REJECTED",
+        ],
+        default: "NOT_SUBMITTED",
+      },
+
+      submittedBy: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+        default: null,
+      },
+
+      submittedAt: {
+        type: Date,
+        default: null,
+      },
+
+      reviewedBy: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+        default: null,
+      },
+
+      reviewedAt: {
+        type: Date,
+        default: null,
+      },
+
+      reviewNote: {
+        type: String,
+        default: "",
+        trim: true,
+        maxlength: 1000,
       },
 
       resolvedAt: {

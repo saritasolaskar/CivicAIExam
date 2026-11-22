@@ -1676,3 +1676,367 @@
   color: #475569;
   background: #f1f5f9;
 }
+
+
+/* =========================================
+   OFFICER MANAGEMENT
+========================================= */
+
+.officer-management-create,
+.officer-management-list {
+  margin-bottom: 22px;
+}
+
+.officer-management-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 18px;
+}
+
+.officer-management-form-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding-top: 6px;
+}
+
+.officer-management-form-footer p {
+  margin: 0;
+  max-width: 520px;
+  color: #788398;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.officer-management-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.officer-management-toolbar label {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.officer-management-toolbar select,
+.officer-management-table td select {
+  min-height: 36px;
+  max-width: 230px;
+  padding: 7px 9px;
+  border: 1px solid #dce3ec;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #334155;
+  font-family: inherit;
+  font-size: 12px;
+}
+
+.officer-management-table {
+  min-width: 1050px;
+}
+
+.officer-management-table td {
+  vertical-align: middle;
+}
+
+.officer-management-muted {
+  margin-top: 4px;
+  color: #8993a5;
+  font-size: 11px;
+  white-space: normal;
+}
+
+.officer-management-status {
+  display: inline-flex;
+  padding: 5px 9px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.officer-management-status.is-active {
+  color: #166534;
+  background: #dcfce7;
+}
+
+.officer-management-status.is-inactive {
+  color: #92400e;
+  background: #fef3c7;
+}
+
+.officer-management-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.officer-management-actions button {
+  min-height: 34px;
+  padding: 7px 10px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.officer-management-actions .admin-cancel-button {
+  margin: 0;
+}
+
+@media (max-width: 700px) {
+  .officer-management-form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .officer-management-form-footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .officer-management-form-footer button {
+    width: 100%;
+  }
+
+  .officer-management-toolbar {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+}
+
+
+/* =========================================================
+   ADMIN OFFICER RESOLUTION REVIEW
+========================================================= */
+
+.admin-resolution-review {
+  margin-top: 22px;
+  padding: 20px;
+  border: 1px solid var(--border-color, #dfe3e8);
+  border-radius: 12px;
+  background: var(--surface-color, #ffffff);
+}
+
+.admin-resolution-review-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.admin-resolution-review-heading h3 {
+  margin: 0 0 6px;
+}
+
+.admin-resolution-review-heading p,
+.admin-resolution-meta p,
+.admin-resolution-description p,
+.admin-resolution-final-status p {
+  margin: 6px 0 0;
+  line-height: 1.55;
+}
+
+.admin-resolution-review-status {
+  flex-shrink: 0;
+  padding: 6px 10px;
+  border-radius: 20px;
+  background: #eef0f3;
+  color: #414b59;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.admin-resolution-review-status.is-pending {
+  background: #fff3d6;
+  color: #895900;
+}
+
+.admin-resolution-review-status.is-approved,
+.admin-resolution-final-status.is-approved {
+  background: #e8f7ed;
+  color: #176b37;
+}
+
+.admin-resolution-review-status.is-rejected,
+.admin-resolution-final-status.is-rejected {
+  background: #fdecec;
+  color: #a52b2b;
+}
+
+.admin-resolution-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.admin-resolution-meta > div,
+.admin-resolution-description {
+  padding: 14px;
+  border-radius: 9px;
+  background: var(--background-color, #f7f8fa);
+}
+
+.admin-resolution-meta strong,
+.admin-resolution-description strong,
+.admin-resolution-evidence > strong {
+  display: block;
+  font-size: 13px;
+}
+
+.admin-resolution-meta small {
+  display: block;
+  margin-top: 4px;
+  color: #667085;
+}
+
+.admin-resolution-description {
+  margin-bottom: 18px;
+}
+
+.admin-resolution-evidence {
+  margin-bottom: 18px;
+}
+
+.admin-resolution-evidence-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.admin-resolution-evidence-item {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+  color: inherit;
+  text-decoration: none;
+}
+
+.admin-resolution-evidence-item img {
+  width: 100%;
+  height: 120px;
+  object-fit: cover;
+  border: 1px solid var(--border-color, #dfe3e8);
+  border-radius: 8px;
+}
+
+.admin-resolution-evidence-item small {
+  color: #667085;
+}
+
+.admin-resolution-file {
+  display: grid;
+  min-height: 90px;
+  place-items: center;
+  padding: 12px;
+  border: 1px solid var(--border-color, #dfe3e8);
+  border-radius: 8px;
+  background: var(--background-color, #f7f8fa);
+}
+
+.admin-resolution-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-color, #dfe3e8);
+}
+
+.admin-resolution-actions label {
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.admin-resolution-actions textarea {
+  width: 100%;
+  min-height: 100px;
+  padding: 12px;
+  border: 1px solid var(--border-color, #cfd5dd);
+  border-radius: 8px;
+  font: inherit;
+  resize: vertical;
+}
+
+.admin-resolution-actions > small {
+  color: #667085;
+}
+
+.admin-resolution-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.admin-resolution-buttons button {
+  padding: 10px 14px;
+  border: 0;
+  border-radius: 8px;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.admin-resolution-buttons button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.admin-resolution-reject {
+  background: #fdecec;
+  color: #a52b2b;
+}
+
+.admin-resolution-approve {
+  background: #176b37;
+  color: #ffffff;
+}
+
+.admin-resolution-message {
+  margin: 8px 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.admin-resolution-message.is-error {
+  color: #b42318;
+}
+
+.admin-resolution-message.is-success {
+  color: #176b37;
+}
+
+.admin-resolution-final-status {
+  margin-top: 14px;
+  padding: 14px;
+  border-radius: 9px;
+}
+
+.admin-resolution-empty {
+  color: #667085;
+}
+
+@media (max-width: 640px) {
+  .admin-resolution-review-heading {
+    flex-direction: column;
+  }
+
+  .admin-resolution-meta {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-resolution-buttons {
+    flex-direction: column;
+  }
+
+  .admin-resolution-buttons button {
+    width: 100%;
+  }
+}

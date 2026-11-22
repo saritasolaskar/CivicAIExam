@@ -1,3 +1,4 @@
+
 import api from "./api";
 
 // CITIZEN
@@ -27,8 +28,20 @@ export const adminAPI = {
   getOfficers: (params = {}) =>
     api.get("/admin/officers", { params }),
 
+  createOfficer: (data) =>
+    api.post("/admin/officers", data),
+
+  updateOfficerAssignment: (id, data) =>
+    api.patch(`/admin/officers/${id}`, data),
+
+  updateOfficerStatus: (id, isActive) =>
+    api.patch(`/admin/officers/${id}/status`, { isActive }),
+
   assignComplaint: (id, data) =>
     api.patch(`/admin/complaints/${id}/assign`, data),
+
+  reviewResolution: (id, data) =>
+    api.patch(`/admin/complaints/${id}/resolution-review`, data),
 };
 
 // OFFICER
@@ -39,8 +52,10 @@ export const officerAPI = {
   getComplaint: (id) =>
     api.get(`/officer/complaints/${id}`),
 
+
   updateComplaintStatus: (id, data) =>
-    api.patch(`/officer/complaints/${id}/status`, data),
+  api.patch(`/officer/complaints/${id}/status`, data),
+
 };
 
 // GEOGRAPHY

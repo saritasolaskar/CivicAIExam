@@ -12,6 +12,8 @@ import {
   RefreshCw,
   ShieldCheck,
   UserRound,
+  Upload,
+  Image as ImageIcon,
 } from "lucide-react";
 
 import { officerAPI } from "../services/portalService";
@@ -20,6 +22,7 @@ import "./OfficerDashboard.css";
 const STATUS_LABELS = {
   ASSIGNED: "Assigned",
   IN_PROGRESS: "In Progress",
+  PENDING_VERIFICATION: "Awaiting Verification",
   RESOLVED: "Resolved",
   REOPENED: "Reopened",
 };
@@ -40,6 +43,150 @@ const formatDate = (value) => {
   });
 };
 
+const formatPercent = (value) =>
+  typeof value === "number"
+    ? `${(value * 100).toFixed(2)}%`
+    : "Unavailable";
+
+function AIImageAssessment({ complaint }) {
+  const assessment = complaint?.aiAnalysis?.imageAssessment;
+
+  if (!assessment || assessment.status === "NOT_REQUESTED") {
+    return (
+      <section className="officer-ai-panel">
+        <h3>AI Image Assessment</h3>
+        <p>AI image assessment is not available for this complaint.</p>
+      </section>
+    );
+  }
+
+  const images = Array.isArray(assessment.images)
+    ? assessment.images
+    : [];
+
+  const categories =
+    assessment.garbageCategoryCounts &&
+    typeof assessment.garbageCategoryCounts === "object"
+      ? Object.entries(assessment.garbageCategoryCounts)
+      : [];
+
+  return (
+    <section className="officer-ai-panel">
+      <div className="officer-ai-heading">
+        <div>
+          <h3>AI Image Assessment</h3>
+          <p>{assessment.model || "Image analysis service"}</p>
+        </div>
+
+        <span className={`officer-ai-status status-${(
+          assessment.status || "unavailable"
+        ).toLowerCase()}`}>
+          {(assessment.status || "Unavailable").replaceAll("_", " ")}
+        </span>
+      </div>
+
+      <div className="officer-ai-stats">
+        <div>
+          <span>Images processed</span>
+          <strong>
+            {assessment.processedImageCount || 0} / {assessment.imageCount || 0}
+          </strong>
+        </div>
+
+        <div>
+          <span>Garbage detections</span>
+          <strong>{assessment.garbageDetectionCount || 0}</strong>
+        </div>
+
+        <div>
+          <span>Accepted garbage detections</span>
+          <strong>{assessment.acceptedGarbageDetectionCount || 0}</strong>
+        </div>
+
+        <div>
+          <span>Potholes detected</span>
+          <strong>{assessment.potholeCount || 0}</strong>
+        </div>
+      </div>
+
+      {typeof assessment.garbageConfidenceThreshold === "number" && (
+        <p className="officer-ai-note">
+          Provisional garbage detection threshold:{" "}
+          {(assessment.garbageConfidenceThreshold * 100).toFixed(0)}%
+        </p>
+      )}
+
+      {categories.length > 0 && (
+        <div className="officer-ai-categories">
+          <strong>Detected object categories</strong>
+          <div>
+            {categories.map(([label, count]) => (
+              <span key={label}>{label}: {count}</span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {assessment.predictedSeverity && (
+        <p className="officer-ai-note">
+          AI pothole severity estimate: {assessment.predictedSeverity}
+        </p>
+      )}
+
+      {assessment.error && (
+        <p className="officer-ai-error">{assessment.error}</p>
+      )}
+
+      {images.length > 0 && (
+        <div className="officer-ai-image-results">
+          <strong>Image-level findings</strong>
+
+          {images.map((image, index) => (
+            <div
+              className="officer-ai-image-result"
+              key={image.imageNumber || index}
+            >
+              <strong>
+                Image {image.imageNumber || index + 1}
+              </strong>
+              <span>
+                Status: {(image.status || "Unknown").replaceAll("_", " ")}
+              </span>
+
+              {(image.garbageDetections || []).map((detection, detectionIndex) => (
+                <div className="officer-ai-detection" key={`g-${detectionIndex}`}>
+                  <strong>{detection.label || "Garbage object"}</strong>
+                  <span>Confidence: {formatPercent(detection.confidence)}</span>
+                  <span>
+                    Threshold: {detection.confidenceAccepted ? "Passed" : "Not passed"}
+                  </span>
+                </div>
+              ))}
+
+              {(image.potholes || []).map((pothole, potholeIndex) => (
+                <div className="officer-ai-detection" key={`p-${potholeIndex}`}>
+                  <strong>
+                    {pothole.imageSeverityEstimate || "Pothole detected"}
+                  </strong>
+                  <span>
+                    Classification confidence: {formatPercent(pothole.confidence)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <p className="officer-ai-warning">
+        AI findings are decision-support information. Verify the actual site
+        conditions before taking action. Detection counts and confidence scores
+        do not independently establish complaint severity.
+      </p>
+    </section>
+  );
+}
+
 export default function OfficerDashboard({ user, onLogout }) {
   const [complaints, setComplaints] = useState([]);
   const [selectedComplaint, setSelectedComplaint] = useState(null);
@@ -50,8 +197,7 @@ export default function OfficerDashboard({ user, onLogout }) {
   const [success, setSuccess] = useState("");
   const [note, setNote] = useState("");
   const [resolutionDescription, setResolutionDescription] = useState("");
-  const [evidenceUrl, setEvidenceUrl] = useState("");
-  const [evidenceType, setEvidenceType] = useState("IMAGE");
+  const [evidenceFiles, setEvidenceFiles] = useState([]);
   const [showResolutionForm, setShowResolutionForm] = useState(false);
 
   const fetchComplaints = async (isRefresh = false) => {
@@ -97,10 +243,13 @@ export default function OfficerDashboard({ user, onLogout }) {
     setError("");
     setSuccess("");
     setNote("");
+    setEvidenceFiles([]);
+    setResolutionDescription("");
     setShowResolutionForm(false);
 
     try {
       const response = await officerAPI.getComplaint(complaint._id);
+
       const details =
         response.data?.complaint ||
         response.data?.data?.complaint;
@@ -114,24 +263,50 @@ export default function OfficerDashboard({ user, onLogout }) {
     }
   };
 
-  const updateStatus = async (status, resolution = false) => {
+  const handleEvidenceSelection = (event) => {
+    const selected = Array.from(event.target.files || []);
+
+    if (selected.length > 5) {
+      setError("You can upload a maximum of five evidence images.");
+      event.target.value = "";
+      return;
+    }
+
+    const allowedTypes = [
+      "image/jpeg",
+      "image/png",
+      "image/webp",
+    ];
+
+    const invalidFile = selected.find(
+      (file) =>
+        !allowedTypes.includes(file.type) ||
+        file.size > 5 * 1024 * 1024
+    );
+
+    if (invalidFile) {
+      setError(
+        "Only JPG, PNG and WEBP images up to 5 MB each are accepted."
+      );
+      event.target.value = "";
+      return;
+    }
+
+    setError("");
+    setEvidenceFiles(selected);
+  };
+
+  const updateStatus = async (status) => {
     if (!selectedComplaint) return;
 
-    if (status === "RESOLVED") {
+    if (status === "PENDING_VERIFICATION") {
       if (!resolutionDescription.trim()) {
         setError("Please enter a resolution description.");
         return;
       }
 
-      if (!evidenceUrl.trim()) {
-        setError("Please provide an evidence URL.");
-        return;
-      }
-
-      try {
-        new URL(evidenceUrl);
-      } catch {
-        setError("Please enter a valid evidence URL.");
+      if (evidenceFiles.length === 0) {
+        setError("Upload at least one resolution evidence image.");
         return;
       }
     }
@@ -141,21 +316,20 @@ export default function OfficerDashboard({ user, onLogout }) {
       setError("");
       setSuccess("");
 
-      const payload = {
-        status,
-        note: note.trim(),
-      };
+      const payload = new FormData();
 
-      if (resolution) {
-        payload.resolutionDescription =
-          resolutionDescription.trim();
+      payload.append("status", status);
+      payload.append("note", note.trim());
 
-        payload.evidence = [
-          {
-            url: evidenceUrl.trim(),
-            mediaType: evidenceType,
-          },
-        ];
+      if (status === "PENDING_VERIFICATION") {
+        payload.append(
+          "resolutionDescription",
+          resolutionDescription.trim()
+        );
+
+        evidenceFiles.forEach((file) => {
+          payload.append("images", file);
+        });
       }
 
       await officerAPI.updateComplaintStatus(
@@ -164,15 +338,16 @@ export default function OfficerDashboard({ user, onLogout }) {
       );
 
       setSuccess(
-        status === "RESOLVED"
-          ? "Complaint marked as resolved successfully."
+        status === "PENDING_VERIFICATION"
+          ? "Resolution submitted. It is now awaiting administrator verification."
           : "Complaint moved to In Progress."
       );
 
       setShowResolutionForm(false);
       setNote("");
       setResolutionDescription("");
-      setEvidenceUrl("");
+      setEvidenceFiles([]);
+
       await fetchComplaints(true);
 
       const refreshed = await officerAPI.getComplaint(
@@ -200,6 +375,10 @@ export default function OfficerDashboard({ user, onLogout }) {
 
   const inProgressCount = complaints.filter(
     (item) => item.status === "IN_PROGRESS"
+  ).length;
+
+  const pendingCount = complaints.filter(
+    (item) => item.status === "PENDING_VERIFICATION"
   ).length;
 
   const resolvedCount = complaints.filter(
@@ -234,10 +413,7 @@ export default function OfficerDashboard({ user, onLogout }) {
             <span>{user?.department || "Municipal Officer"}</span>
           </div>
 
-          <button
-            className="officer-logout"
-            onClick={onLogout}
-          >
+          <button className="officer-logout" onClick={onLogout}>
             <LogOut size={17} />
             Sign out
           </button>
@@ -252,8 +428,7 @@ export default function OfficerDashboard({ user, onLogout }) {
             </span>
             <h1>Officer Workspace</h1>
             <p>
-              Manage your assigned civic complaints and track
-              resolution progress.
+              Manage assigned civic complaints and track resolution progress.
             </p>
           </div>
 
@@ -288,7 +463,13 @@ export default function OfficerDashboard({ user, onLogout }) {
 
           <div className="officer-stat-card">
             <CheckCircle2 size={21} />
-            <span>Resolved</span>
+            <span>Awaiting Verification</span>
+            <strong>{pendingCount}</strong>
+          </div>
+
+          <div className="officer-stat-card">
+            <CheckCircle2 size={21} />
+            <span>Verified Resolutions</span>
             <strong>{resolvedCount}</strong>
           </div>
         </section>
@@ -321,9 +502,7 @@ export default function OfficerDashboard({ user, onLogout }) {
               <div className="officer-empty">
                 <CheckCircle2 size={35} />
                 <h3>No assigned complaints</h3>
-                <p>
-                  New complaints assigned to you will appear here.
-                </p>
+                <p>New complaints assigned to you will appear here.</p>
               </div>
             ) : (
               <div className="officer-complaint-list">
@@ -335,17 +514,13 @@ export default function OfficerDashboard({ user, onLogout }) {
                     onClick={() => openComplaint(complaint)}
                   >
                     <div className="officer-card-top">
-                      <strong>
-                        {complaint.complaintNumber}
-                      </strong>
-
+                      <strong>{complaint.complaintNumber}</strong>
                       <span
                         className={`officer-tag status-${(
                           complaint.status || ""
                         ).toLowerCase()}`}
                       >
-                        {STATUS_LABELS[complaint.status] ||
-                          complaint.status}
+                        {STATUS_LABELS[complaint.status] || complaint.status}
                       </span>
                     </div>
 
@@ -360,12 +535,10 @@ export default function OfficerDashboard({ user, onLogout }) {
                         <Building2 size={14} />
                         {complaint.department?.name || "—"}
                       </span>
-
                       <span>
                         <MapPin size={14} />
                         {complaint.administrativeOffice?.name || "Office not assigned"}
                       </span>
-
                       <span>
                         <UserRound size={14} />
                         {complaint.citizen?.name || "Citizen"}
@@ -382,7 +555,6 @@ export default function OfficerDashboard({ user, onLogout }) {
                           complaint.severity ||
                           "Severity unavailable"}
                       </span>
-
                       <span className="officer-view-link">
                         View details →
                       </span>
@@ -412,9 +584,7 @@ export default function OfficerDashboard({ user, onLogout }) {
                   {selectedComplaint.complaintNumber}
                 </span>
                 <h2>{selectedComplaint.title}</h2>
-                <p>
-                  Submitted {formatDate(selectedComplaint.createdAt)}
-                </p>
+                <p>Submitted {formatDate(selectedComplaint.createdAt)}</p>
               </div>
 
               <span
@@ -430,46 +600,32 @@ export default function OfficerDashboard({ user, onLogout }) {
             <div className="officer-detail-grid">
               <div className="officer-detail-item">
                 <span>Category</span>
-                <strong>
-                  {selectedComplaint.category?.name || "—"}
-                </strong>
+                <strong>{selectedComplaint.category?.name || "—"}</strong>
               </div>
-
               <div className="officer-detail-item">
                 <span>Department</span>
-                <strong>
-                  {selectedComplaint.department?.name || "—"}
-                </strong>
+                <strong>{selectedComplaint.department?.name || "—"}</strong>
               </div>
-
               <div className="officer-detail-item">
                 <span>Severity</span>
                 <strong>
                   {SEVERITY_LABELS[selectedComplaint.severity] ||
-                    selectedComplaint.severity ||
-                    "—"}
+                    selectedComplaint.severity || "—"}
                 </strong>
               </div>
-
               <div className="officer-detail-item">
                 <span>Citizen</span>
-                <strong>
-                  {selectedComplaint.citizen?.name || "—"}
-                </strong>
+                <strong>{selectedComplaint.citizen?.name || "—"}</strong>
               </div>
-
               <div className="officer-detail-item">
                 <span>Administrative Office</span>
                 <strong>
                   {selectedComplaint.administrativeOffice?.name || "Not assigned"}
                 </strong>
               </div>
-
               <div className="officer-detail-item">
                 <span>Prabhag</span>
-                <strong>
-                  {selectedComplaint.prabhag?.name || "Not available"}
-                </strong>
+                <strong>{selectedComplaint.prabhag?.name || "Not available"}</strong>
               </div>
             </div>
 
@@ -513,22 +669,89 @@ export default function OfficerDashboard({ user, onLogout }) {
               </div>
             )}
 
+            <AIImageAssessment complaint={selectedComplaint} />
+
+            {selectedComplaint.resolution?.reviewStatus &&
+              selectedComplaint.resolution.reviewStatus !== "NOT_SUBMITTED" && (
+                <div
+                  className={`officer-resolution-review ${
+                    selectedComplaint.resolution.reviewStatus === "REJECTED"
+                      ? "officer-resolution-rejected"
+                      : selectedComplaint.resolution.reviewStatus === "APPROVED"
+                        ? "officer-resolution-approved"
+                        : ""
+                  }`}
+                >
+                  <h3>
+                    {selectedComplaint.resolution.reviewStatus === "REJECTED"
+                      ? "Resolution Rejected — Action Required"
+                      : selectedComplaint.resolution.reviewStatus === "APPROVED"
+                        ? "Resolution Approved"
+                        : "Resolution Review"}
+                  </h3>
+
+                  <p>
+                    Review status:{" "}
+                    <strong>
+                      {selectedComplaint.resolution.reviewStatus.replaceAll("_", " ")}
+                    </strong>
+                  </p>
+
+                  {selectedComplaint.resolution.reviewStatus === "REJECTED" && (
+                    <div className="officer-rejection-reason">
+                      <strong>Administrator's feedback</strong>
+                      <p>
+                        {selectedComplaint.resolution.reviewNote ||
+                          "The administrator rejected this submission. Please contact the administrator for clarification."}
+                      </p>
+                      <span>
+                        Correct the issue described above and submit a new
+                        resolution with updated evidence.
+                      </span>
+                    </div>
+                  )}
+
+                  {selectedComplaint.resolution.description && (
+                    <div className="officer-previous-resolution">
+                      <strong>Previous resolution submission</strong>
+                      <p>{selectedComplaint.resolution.description}</p>
+                    </div>
+                  )}
+
+                  {selectedComplaint.resolution.reviewStatus !== "REJECTED" &&
+                    selectedComplaint.resolution.reviewNote && (
+                      <p>
+                        Administrator note:{" "}
+                        {selectedComplaint.resolution.reviewNote}
+                      </p>
+                    )}
+
+                  {selectedComplaint.resolution.evidence?.map((item, index) => (
+                    <a
+                      key={index}
+                      href={item.url}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Open submitted resolution image {index + 1}
+                    </a>
+                  ))}
+                </div>
+              )}
+
             {selectedComplaint.statusHistory?.length > 0 && (
               <div className="officer-description">
                 <h3>Status History</h3>
                 <div className="officer-history">
-                  {selectedComplaint.statusHistory.map(
-                    (entry, index) => (
-                      <div key={entry._id || index}>
-                        <strong>
-                          {STATUS_LABELS[entry.status] ||
-                            entry.status}
-                        </strong>
-                        <span>{formatDate(entry.changedAt)}</span>
-                        {entry.note && <p>{entry.note}</p>}
-                      </div>
-                    )
-                  )}
+                  {selectedComplaint.statusHistory.map((entry, index) => (
+                    <div key={entry._id || index}>
+                      <strong>
+                        {STATUS_LABELS[entry.status] || entry.status}
+                      </strong>
+                      <span>{formatDate(entry.changedAt)}</span>
+                      {entry.note && <p>{entry.note}</p>}
+                    </div>
+                  ))}
                 </div>
               </div>
             )}
@@ -536,9 +759,7 @@ export default function OfficerDashboard({ user, onLogout }) {
             {selectedComplaint.status === "ASSIGNED" && (
               <div className="officer-action-panel">
                 <h3>Start Working on Complaint</h3>
-                <p>
-                  Update the status when you begin handling this issue.
-                </p>
+                <p>Update the status when you begin handling this issue.</p>
 
                 <label>Note (optional)</label>
                 <textarea
@@ -562,49 +783,57 @@ export default function OfficerDashboard({ user, onLogout }) {
               <div className="officer-action-panel">
                 {!showResolutionForm ? (
                   <>
-                    <h3>Resolve Complaint</h3>
+                    <h3>Submit Completed Work</h3>
                     <p>
-                      Submit the resolution details and evidence after
-                      completing the work.
+                      Describe the work completed and upload genuine
+                      after-resolution images. An administrator must verify
+                      the submission before the complaint becomes resolved.
                     </p>
-
                     <button
                       className="officer-primary-button"
                       onClick={() => setShowResolutionForm(true)}
                     >
-                      Mark as Resolved
+                      Submit for Verification
                     </button>
                   </>
                 ) : (
                   <>
-                    <h3>Resolution Details</h3>
+                    <h3>Resolution Submission</h3>
 
                     <label>Resolution Description</label>
                     <textarea
                       value={resolutionDescription}
-                      onChange={(e) =>
-                        setResolutionDescription(e.target.value)
-                      }
+                      onChange={(e) => setResolutionDescription(e.target.value)}
                       placeholder="Describe the action taken to resolve this complaint..."
                       rows={4}
+                      maxLength={3000}
                     />
 
-                    <label>Evidence URL</label>
-                    <input
-                      type="url"
-                      value={evidenceUrl}
-                      onChange={(e) => setEvidenceUrl(e.target.value)}
-                      placeholder="https://example.com/resolution-image.jpg"
-                    />
+                    <label>Resolution Evidence Images</label>
+                    <div className="officer-file-picker">
+                      <Upload size={20} />
+                      <span>Select up to 5 images (JPG, PNG or WEBP)</span>
+                      <input
+                        type="file"
+                        accept="image/jpeg,image/png,image/webp"
+                        multiple
+                        onChange={handleEvidenceSelection}
+                      />
+                    </div>
 
-                    <label>Evidence Type</label>
-                    <select
-                      value={evidenceType}
-                      onChange={(e) => setEvidenceType(e.target.value)}
-                    >
-                      <option value="IMAGE">Image</option>
-                      <option value="VIDEO">Video</option>
-                    </select>
+                    {evidenceFiles.length > 0 && (
+                      <div className="officer-selected-files">
+                        {evidenceFiles.map((file, index) => (
+                          <div key={`${file.name}-${index}`}>
+                            <ImageIcon size={15} />
+                            <span>{file.name}</span>
+                            <small>
+                              {(file.size / (1024 * 1024)).toFixed(2)} MB
+                            </small>
+                          </div>
+                        ))}
+                      </div>
+                    )}
 
                     <label>Additional Note (optional)</label>
                     <textarea
@@ -617,7 +846,10 @@ export default function OfficerDashboard({ user, onLogout }) {
                     <div className="officer-form-actions">
                       <button
                         className="officer-secondary-button"
-                        onClick={() => setShowResolutionForm(false)}
+                        onClick={() => {
+                          setShowResolutionForm(false);
+                          setEvidenceFiles([]);
+                        }}
                         disabled={updating}
                       >
                         Cancel
@@ -625,10 +857,10 @@ export default function OfficerDashboard({ user, onLogout }) {
 
                       <button
                         className="officer-primary-button"
-                        onClick={() => updateStatus("RESOLVED", true)}
+                        onClick={() => updateStatus("PENDING_VERIFICATION")}
                         disabled={updating}
                       >
-                        {updating ? "Submitting..." : "Submit Resolution"}
+                        {updating ? "Submitting..." : "Submit for Verification"}
                       </button>
                     </div>
                   </>
@@ -636,15 +868,27 @@ export default function OfficerDashboard({ user, onLogout }) {
               </div>
             )}
 
+            {selectedComplaint.status === "PENDING_VERIFICATION" && (
+              <div className="officer-pending-review">
+                <Clock3 size={22} />
+                <div>
+                  <strong>Awaiting administrator verification</strong>
+                  <p>
+                    Your resolution has been submitted. The complaint will
+                    only become resolved after administrator approval.
+                  </p>
+                </div>
+              </div>
+            )}
+
             {selectedComplaint.status === "RESOLVED" && (
               <div className="officer-resolved">
                 <CheckCircle2 size={22} />
                 <div>
-                  <strong>Complaint resolved</strong>
+                  <strong>Resolution verified and approved</strong>
                   <p>
                     {selectedComplaint.resolution?.description ||
-                      selectedComplaint.resolutionDescription ||
-                      "Resolution has been submitted."}
+                      "The administrator approved the resolution."}
                   </p>
                 </div>
               </div>

@@ -7,6 +7,10 @@ import {
 } from "../middleware/auth.middleware.js";
 
 import {
+  uploadComplaintImages,
+} from "../middleware/upload.middleware.js";
+
+import {
   getAssignedComplaints,
   getAssignedComplaintById,
   updateAssignedComplaintStatus,
@@ -17,9 +21,12 @@ const router = express.Router();
 router.use(protect, authorize("OFFICER"));
 
 router.get("/complaints", getAssignedComplaints);
+
 router.get("/complaints/:id", getAssignedComplaintById);
+
 router.patch(
   "/complaints/:id/status",
+  uploadComplaintImages,
   updateAssignedComplaintStatus
 );
 
