@@ -211,6 +211,51 @@ const imagePotholeSchema = new mongoose.Schema(
   { _id: false }
 );
 
+
+const imageGarbageDetectionSchema = new mongoose.Schema(
+  {
+    detectionNumber: {
+      type: Number,
+      min: 1,
+    },
+
+    label: {
+      type: String,
+      default: "Unknown",
+      maxlength: 100,
+    },
+
+    classId: {
+      type: Number,
+      default: null,
+    },
+
+    confidence: {
+      type: Number,
+      min: 0,
+      max: 1,
+      default: null,
+    },
+
+    confidenceAccepted: {
+      type: Boolean,
+      default: false,
+    },
+
+    boundingBox: {
+      type: [Number],
+      default: [],
+    },
+
+    areaRatioPercent: {
+      type: Number,
+      min: 0,
+      default: null,
+    },
+  },
+  { _id: false }
+);
+
 const imageResultSchema = new mongoose.Schema(
   {
     imageNumber: {
@@ -223,12 +268,25 @@ const imageResultSchema = new mongoose.Schema(
       enum: [
         "COMPLETED",
         "NO_POTHOLE_DETECTED",
+        "NO_GARBAGE_DETECTED",
         "FAILED",
         "SKIPPED_TIMEOUT",
       ],
     },
 
     detectionCount: {
+      type: Number,
+      min: 0,
+      default: 0,
+    },
+
+    garbageDetectionCount: {
+      type: Number,
+      min: 0,
+      default: 0,
+    },
+
+    acceptedGarbageDetectionCount: {
       type: Number,
       min: 0,
       default: 0,
@@ -241,6 +299,11 @@ const imageResultSchema = new mongoose.Schema(
 
     potholes: {
       type: [imagePotholeSchema],
+      default: [],
+    },
+
+    garbageDetections: {
+      type: [imageGarbageDetectionSchema],
       default: [],
     },
   },
@@ -258,6 +321,7 @@ const imageAssessmentSchema = new mongoose.Schema(
         "PARTIAL",
         "COMPLETED",
         "NO_POTHOLE_DETECTED",
+        "NO_GARBAGE_DETECTED",
       ],
       default: "NOT_REQUESTED",
     },
@@ -283,6 +347,30 @@ const imageAssessmentSchema = new mongoose.Schema(
       type: Number,
       min: 0,
       default: 0,
+    },
+
+    garbageDetectionCount: {
+      type: Number,
+      min: 0,
+      default: 0,
+    },
+
+    acceptedGarbageDetectionCount: {
+      type: Number,
+      min: 0,
+      default: 0,
+    },
+
+    garbageCategoryCounts: {
+      type: mongoose.Schema.Types.Mixed,
+      default: {},
+    },
+
+    garbageConfidenceThreshold: {
+      type: Number,
+      min: 0,
+      max: 1,
+      default: null,
     },
 
     predictedSeverity: {

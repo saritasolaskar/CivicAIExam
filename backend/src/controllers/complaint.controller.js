@@ -29,6 +29,7 @@ const AI_SERVICE_URL =
   process.env.AI_SERVICE_URL || "http://127.0.0.1:8000";
 
 const AI_CLASSIFICATION_THRESHOLD = 0.75;
+const GARBAGE_DETECTION_THRESHOLD = 0.50;
 
 // Resolve the active PMC record from the database.
 const getPMC = async () => {
@@ -123,7 +124,11 @@ const createEmptyImageAssessment = ({
   predictedSeverity: null,
   confidence: null,
   detectionCount: 0,
+  garbageDetectionCount: 0,
+  acceptedGarbageDetectionCount: 0,
+  garbageCategoryCounts: {},
   confidenceThreshold: AI_CLASSIFICATION_THRESHOLD,
+  garbageConfidenceThreshold: null,
   humanVerificationRequired: true,
   assessedAt: null,
   error: "",
@@ -402,6 +407,252 @@ const analyzePotholeImages = async (images = []) => {
   return result;
 };
 
+
+// Analyze uploaded garbage/litter images using the FastAPI service.
+// Raw detections are retained; only provisional high-confidence detections
+// are marked accepted. This analysis never changes complaint severity.
+const analyzeGarbageImages = async (images = []) => {
+  const result = createEmptyImageAssessment({
+    status: images.length > 0 ? "FAILED" : "NOT_REQUESTED",
+    imageCount: images.length,
+    reason: images.length
+      ? ""
+      : "No uploaded images were available for analysis.",
+  });
+
+  result.confidenceThreshold = GARBAGE_DETECTION_THRESHOLD;
+  result.garbageConfidenceThreshold = GARBAGE_DETECTION_THRESHOLD;
+
+  if (!images.length) {
+    return result;
+  }
+
+  result.attempted = true;
+  result.assessedAt = new Date();
+  result.model = "Dedicated garbage and litter detector";
+
+  let successfulAnalyses = 0;
+  let totalDetections = 0;
+  let acceptedDetections = 0;
+
+  const analysisErrors = [];
+  const combinedCategoryCounts = {};
+
+  for (const [index, image] of images.entries()) {
+    const imageResult = {
+      imageNumber: index + 1,
+      status: "FAILED",
+      detectionCount: 0,
+      garbageDetectionCount: 0,
+      acceptedGarbageDetectionCount: 0,
+      error: "",
+      potholes: [],
+      garbageDetections: [],
+    };
+
+    try {
+      if (!image?.buffer || !image?.extension) {
+        throw new Error(
+          "Verified image buffer or extension is missing."
+        );
+      }
+
+      const extension = image.extension.toLowerCase();
+
+      const mimeTypes = {
+        jpg: "image/jpeg",
+        jpeg: "image/jpeg",
+        png: "image/png",
+        webp: "image/webp",
+      };
+
+      const mimeType = mimeTypes[extension];
+
+      if (!mimeType) {
+        throw new Error(
+          "Unsupported image format for AI analysis."
+        );
+      }
+
+      const formData = new FormData();
+
+      const imageBlob = new Blob([image.buffer], {
+        type: mimeType,
+      });
+
+      formData.append(
+        "file",
+        imageBlob,
+        `complaint-image.${extension}`
+      );
+
+      const response = await fetch(
+        `${AI_SERVICE_URL}/analyze-garbage`,
+        {
+          method: "POST",
+          body: formData,
+          signal: AbortSignal.timeout(10000),
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error(
+          `AI service returned HTTP ${response.status}.`
+        );
+      }
+
+      const data = await response.json();
+
+      if (
+        !data.success ||
+        !Array.isArray(data.detections)
+      ) {
+        throw new Error(
+          "AI service returned an invalid garbage analysis response."
+        );
+      }
+
+      successfulAnalyses++;
+
+      if (
+        typeof data.model === "string" &&
+        data.model.trim()
+      ) {
+        result.model = data.model;
+      }
+
+      const categoryCounts =
+        data.category_counts &&
+        typeof data.category_counts === "object" &&
+        !Array.isArray(data.category_counts)
+          ? data.category_counts
+          : {};
+
+      for (const [label, count] of Object.entries(categoryCounts)) {
+        const safeCount = Number(count);
+
+        if (Number.isFinite(safeCount) && safeCount >= 0) {
+          combinedCategoryCounts[label] =
+            (combinedCategoryCounts[label] || 0) + safeCount;
+        }
+      }
+
+      imageResult.detectionCount = data.detections.length;
+      imageResult.garbageDetectionCount = data.detections.length;
+
+      for (const [detectionIndex, detection] of data.detections.entries()) {
+        const confidence = Number(detection.confidence);
+
+        const validConfidence =
+          Number.isFinite(confidence) &&
+          confidence >= 0 &&
+          confidence <= 1;
+
+        const confidenceAccepted =
+          validConfidence &&
+          confidence >= GARBAGE_DETECTION_THRESHOLD;
+
+        const boundingBox =
+          Array.isArray(detection.box) &&
+          detection.box.length === 4 &&
+          detection.box.every(
+            (value) => Number.isFinite(Number(value))
+          )
+            ? detection.box.map(Number)
+            : [];
+
+        const areaRatio = Number(detection.box_area_ratio_percent);
+
+        imageResult.garbageDetections.push({
+          detectionNumber: detectionIndex + 1,
+          label:
+            typeof detection.label === "string"
+              ? detection.label.slice(0, 100)
+              : "Unknown",
+          classId:
+            Number.isInteger(Number(detection.class_id))
+              ? Number(detection.class_id)
+              : null,
+          confidence: validConfidence ? confidence : null,
+          confidenceAccepted,
+          boundingBox,
+          areaRatioPercent:
+            Number.isFinite(areaRatio) && areaRatio >= 0
+              ? areaRatio
+              : null,
+        });
+
+        if (confidenceAccepted) {
+          imageResult.acceptedGarbageDetectionCount++;
+        }
+      }
+
+      imageResult.status = data.detections.length > 0
+        ? "COMPLETED"
+        : "NO_GARBAGE_DETECTED";
+    } catch (error) {
+      const isTimeout =
+        error.name === "TimeoutError" ||
+        error.name === "AbortError";
+
+      imageResult.status = isTimeout
+        ? "SKIPPED_TIMEOUT"
+        : "FAILED";
+
+      imageResult.error =
+        error.message || "Garbage image analysis failed.";
+
+      analysisErrors.push(
+        `Image ${index + 1}: ${imageResult.error}`
+      );
+
+      console.warn(
+        `Garbage image analysis failed for image ${index + 1}:`,
+        imageResult.error
+      );
+    }
+
+    totalDetections += imageResult.garbageDetectionCount;
+    acceptedDetections += imageResult.acceptedGarbageDetectionCount;
+
+    result.images.push(imageResult);
+  }
+
+  result.available = successfulAnalyses > 0;
+  result.processedImageCount = successfulAnalyses;
+  result.detectionCount = totalDetections;
+  result.garbageDetectionCount = totalDetections;
+  result.acceptedGarbageDetectionCount = acceptedDetections;
+  result.garbageCategoryCounts = combinedCategoryCounts;
+  result.error = analysisErrors.join(" ").slice(0, 1000);
+
+  if (successfulAnalyses === 0) {
+    result.status = "FAILED";
+  } else if (successfulAnalyses < images.length) {
+    result.status = "PARTIAL";
+  } else if (totalDetections === 0) {
+    result.status = "NO_GARBAGE_DETECTED";
+  } else {
+    result.status = "COMPLETED";
+  }
+
+  if (successfulAnalyses > 0 && totalDetections > 0) {
+    result.reason =
+      `${totalDetections} raw litter-object detection(s) recorded; ` +
+      `${acceptedDetections} met the provisional confidence threshold. ` +
+      "Human verification is required. Object detections do not independently " +
+      "establish illegal dumping or the overall severity of garbage accumulation.";
+  } else if (successfulAnalyses > 0) {
+    result.reason =
+      "Images were analyzed successfully, but no garbage or litter objects were detected.";
+  } else {
+    result.reason =
+      "Garbage image analysis failed. Existing text and category assessment was retained.";
+  }
+
+  return result;
+};
+
 // CREATE COMPLAINT
 export const createComplaint = async (req, res, next) => {
   const savedImagePaths = [];
@@ -586,8 +837,9 @@ export const createComplaint = async (req, res, next) => {
     });
 
     let finalSeverity = textSeverityAssessment.severity;
+    let imageSeverityRaised = false;
 
-    // 8. Run image analysis only for pothole complaints.
+    // 8. Run the relevant image analysis for supported categories.
     let imageAssessment = createEmptyImageAssessment({
       status: "NOT_REQUESTED",
       reason: "Image analysis was not required for this category.",
@@ -601,14 +853,21 @@ export const createComplaint = async (req, res, next) => {
 
       const aiSeverity = imageAssessment.predictedSeverity;
 
-      // Severity can increase based on the image estimate,
-      // but it must never be downgraded.
+      // Pothole image estimates may increase severity, never downgrade it.
       if (
         aiSeverity &&
         SEVERITY_RANK[aiSeverity] > SEVERITY_RANK[finalSeverity]
       ) {
         finalSeverity = aiSeverity;
+        imageSeverityRaised = true;
       }
+    } else if (
+      ["GARBAGE_ACCUMULATION", "ILLEGAL_DUMPING"].includes(category.code)
+    ) {
+      // Garbage detections are evidence only; they do not set severity.
+      imageAssessment = await analyzeGarbageImages(
+        req.verifiedImages || []
+      );
     }
 
     // Keep the existing severity basis enum compatible with Complaint.js.
@@ -780,7 +1039,9 @@ export const createComplaint = async (req, res, next) => {
 
       severityAssessment: {
         level: finalSeverity,
-        basis: textSeverityAssessment.basis,
+        basis: imageSeverityRaised
+          ? "CONTEXTUAL_RULE"
+          : textSeverityAssessment.basis,
         reason: severityReason,
         assessedAt: new Date(),
         manuallyVerified: false,
@@ -797,9 +1058,20 @@ export const createComplaint = async (req, res, next) => {
           model: imageAssessment.model,
           imageCount: imageAssessment.imageCount,
           processedImageCount: imageAssessment.processedImageCount,
-          potholeCount: imageAssessment.detectionCount,
+          potholeCount:
+            category.code === "POTHOLE"
+              ? imageAssessment.detectionCount
+              : 0,
+          garbageDetectionCount:
+            imageAssessment.garbageDetectionCount,
+          acceptedGarbageDetectionCount:
+            imageAssessment.acceptedGarbageDetectionCount,
+          garbageCategoryCounts:
+            imageAssessment.garbageCategoryCounts,
           predictedSeverity: imageAssessment.predictedSeverity,
-          confidenceThreshold: AI_CLASSIFICATION_THRESHOLD,
+          confidenceThreshold: imageAssessment.confidenceThreshold,
+          garbageConfidenceThreshold:
+            imageAssessment.garbageConfidenceThreshold,
           humanVerificationRequired: true,
           assessedAt: imageAssessment.assessedAt,
           error: imageAssessment.error,
