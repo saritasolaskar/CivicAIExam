@@ -76,7 +76,6 @@ export const getAdminDashboardOverview = async (req, res, next) => {
       pendingAssignmentReviews,
       totalOfficers,
       activeOfficers,
-      totalCitizens,
       statusCounts,
       severityCounts,
       departmentCounts,
@@ -108,12 +107,6 @@ export const getAdminDashboardOverview = async (req, res, next) => {
       User.countDocuments({
         corporation: pmc._id,
         role: "OFFICER",
-        isActive: true,
-      }),
-
-      User.countDocuments({
-        corporation: pmc._id,
-        role: "CITIZEN",
         isActive: true,
       }),
 
@@ -297,7 +290,6 @@ export const getAdminDashboardOverview = async (req, res, next) => {
           totalOfficers,
           activeOfficers,
           inactiveOfficers: totalOfficers - activeOfficers,
-          totalCitizens,
           confirmedDuplicates,
           closedComplaints,
         },

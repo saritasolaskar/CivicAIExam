@@ -17,6 +17,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { citizenAPI } from "../services/portalService";
+import api from "../services/api";
 import "./CitizenDashboard.css";
 
 const CATEGORIES = [
@@ -63,10 +64,72 @@ function formatDate(date) {
   });
 }
 
-function getImageUrl(url) {
-  if (!url) return "";
-  if (url.startsWith("http://") || url.startsWith("https://")) return url;
-  return `http://localhost:5001${url.startsWith("/") ? "" : "/"}${url}`;
+
+function AuthenticatedComplaintImage({
+  complaintId,
+  media,
+  alt,
+  kind = "complaint",
+}) {
+  const [imageUrl, setImageUrl] = useState("");
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    let objectUrl = "";
+
+    const loadImage = async () => {
+      try {
+        const parsedUrl = new URL(media.url, window.location.origin);
+        const filename = decodeURIComponent(
+          parsedUrl.pathname.split("/").filter(Boolean).pop() || ""
+        );
+
+        if (!filename) {
+          throw new Error("Image filename is unavailable.");
+        }
+
+        const response = await api.get(
+          `/media/${complaintId}/${kind}/${encodeURIComponent(filename)}`,
+          { responseType: "blob" }
+        );
+
+        objectUrl = URL.createObjectURL(response.data);
+
+        if (cancelled) {
+          URL.revokeObjectURL(objectUrl);
+        } else {
+          setImageUrl(objectUrl);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setFailed(true);
+          console.error("Unable to load authenticated image:", error);
+        }
+      }
+    };
+
+    if (complaintId && media?.url) {
+      loadImage();
+    } else {
+      setFailed(true);
+    }
+
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [complaintId, media?.url, kind]);
+
+  if (imageUrl) {
+    return <img src={imageUrl} alt={alt} loading="lazy" />;
+  }
+
+  return (
+    <span className="citizen-complaint-image-placeholder">
+      {failed ? "Image unavailable" : "Loading image..."}
+    </span>
+  );
 }
 
 function CitizenDashboard({ user, onLogout }) {
@@ -394,7 +457,7 @@ function CitizenDashboard({ user, onLogout }) {
                 {(complaint.status || "SUBMITTED").replaceAll("_", " ")}
               </span>
             </div>
-            <div className="citizen-complaint-footer">
+<div className="citizen-complaint-footer">
               <span>
                 Severity: <strong>{complaint.severity || "Not assessed"}</strong>
               </span>
@@ -967,15 +1030,22 @@ function CitizenDashboard({ user, onLogout }) {
   <Clock3 size={18} />
   <span>
     Assignment status:{" "}
-    <strong>
-      {selectedComplaint.recommendedAssignment?.reviewStatus === "APPROVED"
-        ? "Administrator review completed"
-        : selectedComplaint.recommendedAssignment?.reviewStatus ===
-            "NEEDS_MANUAL_REVIEW"
-          ? "Manual administrator review required"
-          : "Pending administrator review"}
-    </strong>
-    . Suggested details are provisional and are not official assignments.
+    {selectedComplaint.recommendedAssignment?.reviewStatus === "APPROVED" ? (
+      <strong>
+        Administrator review completed. Official assignment confirmed.
+      </strong>
+    ) : selectedComplaint.recommendedAssignment?.reviewStatus ===
+      "NEEDS_MANUAL_REVIEW" ? (
+      <strong>
+        Manual administrator review required. Suggested details are
+        provisional and are not official assignments.
+      </strong>
+    ) : (
+      <strong>
+        Pending administrator review. Suggested details are provisional
+        and are not official assignments.
+      </strong>
+    )}
   </span>
 </div>
 
@@ -985,30 +1055,80 @@ function CitizenDashboard({ user, onLogout }) {
                 <p>{selectedComplaint.description}</p>
               </div>
 
-              {selectedComplaint.media?.some((item) => item.url) && (
+              {selectedComplaint.resolution?.reviewStatus &&
+                selectedComplaint.resolution.reviewStatus !== "NOT_SUBMITTED" && (
+                  <div className="citizen-detail-description">
+                    <h3>Resolution Update</h3>
+
+                    <p>
+                      <strong>Review Status: </strong>
+                      {selectedComplaint.resolution.reviewStatus.replaceAll("_", " ")}
+                    </p>
+
+                    {selectedComplaint.resolution.description && (
+                      <p>
+                        <strong>Officer's Resolution: </strong>
+                        {selectedComplaint.resolution.description}
+                      </p>
+                    )}
+
+                    <p>
+                      <strong>Submitted: </strong>
+                      {formatDate(selectedComplaint.resolution.submittedAt)}
+                    </p>
+
+                    {selectedComplaint.resolution.reviewNote && (
+                      <p>
+                        <strong>Administrator's Review Note: </strong>
+                        {selectedComplaint.resolution.reviewNote}
+                      </p>
+                    )}
+
+                    {selectedComplaint.resolution.reviewedAt && (
+                      <p>
+                        <strong>Reviewed: </strong>
+                        {formatDate(selectedComplaint.resolution.reviewedAt)}
+                      </p>
+                    )}
+                    {selectedComplaint.resolution.evidence?.length > 0 && (
+                      <div className="citizen-detail-images">
+                        <h3>Resolution evidence</h3>
+                        <div className="citizen-detail-image-grid">
+                          {selectedComplaint.resolution.evidence.map((item, index) => (
+                            <AuthenticatedComplaintImage
+                              key={`resolution-${selectedComplaint._id}-${index}`}
+                              complaintId={selectedComplaint._id}
+                              media={item}
+                              kind="resolution"
+                              alt={`Resolution evidence ${index + 1}`}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                  </div>
+                )}
+              {selectedComplaint.media?.some(
+                (item) => item.url && item.mediaType === "IMAGE"
+              ) && (
                 <div className="citizen-detail-images">
                   <h3>Attached photographs</h3>
                   <div className="citizen-detail-image-grid">
                     {selectedComplaint.media
                       .filter((item) => item.url && item.mediaType === "IMAGE")
                       .map((item, index) => (
-                        <a
-                          key={`${item.url}-${index}`}
-                          href={getImageUrl(item.url)}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="citizen-detail-image-link"
-                        >
-                          <img
-                            src={getImageUrl(item.url)}
-                            alt={`Complaint evidence ${index + 1}`}
-                            loading="lazy"
-                          />
-                        </a>
+                        <AuthenticatedComplaintImage
+                          key={`complaint-${selectedComplaint._id}-${index}`}
+                          complaintId={selectedComplaint._id}
+                          media={item}
+                          alt={`Complaint evidence ${index + 1}`}
+                        />
                       ))}
                   </div>
                 </div>
               )}
+
 
               {selectedComplaint.duplicateCheck?.status === "POSSIBLE" && (
                 <div className="citizen-duplicate-note">

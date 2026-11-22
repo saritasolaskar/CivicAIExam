@@ -2105,13 +2105,6 @@ export default function AdminDashboard({
                 />
 
                 <StatCard
-                  title="Registered Citizens"
-                  value={summary.totalCitizens}
-                  icon={UserRound}
-                  description="Active citizen accounts"
-                />
-
-                <StatCard
                   title="Confirmed Duplicates"
                   value={summary.confirmedDuplicates}
                   icon={Copy}
