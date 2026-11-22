@@ -18,6 +18,18 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+const SEVERITY_RANK = {
+  LOW: 1,
+  MEDIUM: 2,
+  HIGH: 3,
+  CRITICAL: 4,
+};
+
+const AI_SERVICE_URL =
+  process.env.AI_SERVICE_URL || "http://127.0.0.1:8000";
+
+const AI_CLASSIFICATION_THRESHOLD = 0.75;
+
 // Resolve the active PMC record from the database.
 const getPMC = async () => {
   return MunicipalCorporation.findOne({
@@ -26,6 +38,7 @@ const getPMC = async () => {
   }).select("_id name code");
 };
 
+// Recommend an eligible officer based on current workload.
 const recommendEligibleOfficer = async ({
   corporationId,
   departmentId,
@@ -48,7 +61,6 @@ const recommendEligibleOfficer = async ({
 
   const officerIds = officers.map((officer) => officer._id);
 
-  // Count complaints currently assigned to each eligible officer.
   const workloadRecords = await Complaint.aggregate([
     {
       $match: {
@@ -74,8 +86,6 @@ const recommendEligibleOfficer = async ({
     ])
   );
 
-  // Lowest active workload first.
-  // Stable ordering breaks ties consistently.
   officers.sort((a, b) => {
     const workloadDifference =
       (workloadMap.get(String(a._id)) || 0) -
@@ -95,6 +105,301 @@ const recommendEligibleOfficer = async ({
     activeComplaintCount:
       workloadMap.get(String(selectedOfficer._id)) || 0,
   };
+};
+
+// Return the default image assessment structure.
+// This is also used when image analysis is not requested.
+const createEmptyImageAssessment = ({
+  status = "NOT_REQUESTED",
+  reason = "",
+  imageCount = 0,
+} = {}) => ({
+  attempted: false,
+  available: false,
+  status,
+  model: "",
+  imageCount,
+  processedImageCount: 0,
+  predictedSeverity: null,
+  confidence: null,
+  detectionCount: 0,
+  confidenceThreshold: AI_CLASSIFICATION_THRESHOLD,
+  humanVerificationRequired: true,
+  assessedAt: null,
+  error: "",
+  images: [],
+  reason,
+});
+
+// Analyze uploaded pothole images using the FastAPI service.
+// AI failure must never prevent complaint registration.
+const analyzePotholeImages = async (images = []) => {
+  const result = createEmptyImageAssessment({
+    status: images.length > 0 ? "FAILED" : "NOT_REQUESTED",
+    imageCount: images.length,
+    reason: images.length
+      ? ""
+      : "No uploaded images were available for analysis.",
+  });
+
+  if (!images.length) {
+    return result;
+  }
+
+  result.attempted = true;
+  result.assessedAt = new Date();
+  result.model = "Pothole detector + severity classifier";
+
+  let highestSeverity = null;
+  let highestConfidence = 0;
+  let successfulAnalyses = 0;
+  let totalDetections = 0;
+
+  const analysisErrors = [];
+
+  for (const [index, image] of images.entries()) {
+    const imageResult = {
+      imageNumber: index + 1,
+      status: "FAILED",
+      detectionCount: 0,
+      error: "",
+      potholes: [],
+    };
+
+    try {
+      if (!image?.buffer || !image?.extension) {
+        throw new Error(
+          "Verified image buffer or extension is missing."
+        );
+      }
+
+      const extension = image.extension.toLowerCase();
+
+      const mimeTypes = {
+        jpg: "image/jpeg",
+        jpeg: "image/jpeg",
+        png: "image/png",
+        webp: "image/webp",
+      };
+
+      const mimeType = mimeTypes[extension];
+
+      if (!mimeType) {
+        throw new Error(
+          "Unsupported image format for AI analysis."
+        );
+      }
+
+      const formData = new FormData();
+
+      const imageBlob = new Blob([image.buffer], {
+        type: mimeType,
+      });
+
+      formData.append(
+        "file",
+        imageBlob,
+        `complaint-image.${extension}`
+      );
+
+      const response = await fetch(
+        `${AI_SERVICE_URL}/analyze-pothole-severity`,
+        {
+          method: "POST",
+          body: formData,
+          signal: AbortSignal.timeout(10000),
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error(
+          `AI service returned HTTP ${response.status}.`
+        );
+      }
+
+      const data = await response.json();
+
+      if (
+        !data.success ||
+        !Array.isArray(data.potholes)
+      ) {
+        throw new Error(
+          "AI service returned an invalid analysis response."
+        );
+      }
+
+      successfulAnalyses++;
+
+      if (
+        typeof data.model === "string" &&
+        data.model.trim()
+      ) {
+        result.model = data.model;
+      }
+
+      imageResult.detectionCount = data.potholes.length;
+
+      imageResult.status = data.potholes.length > 0
+        ? "COMPLETED"
+        : "NO_POTHOLE_DETECTED";
+
+      for (const [potholeIndex, pothole] of data.potholes.entries()) {
+        const label = String(
+          pothole.image_severity_estimate || ""
+        ).toLowerCase();
+
+        const classificationConfidence = Number(
+          pothole.classification_confidence
+        );
+
+        const detectionConfidence = Number(
+          pothole.detection_confidence
+        );
+
+        let mappedSeverity = null;
+
+        if (label.includes("major_pothole")) {
+          mappedSeverity = "HIGH";
+        } else if (label.includes("medium_pothole")) {
+          mappedSeverity = "MEDIUM";
+        }
+
+        const confidenceAccepted =
+          mappedSeverity !== null &&
+          Number.isFinite(classificationConfidence) &&
+          classificationConfidence >= AI_CLASSIFICATION_THRESHOLD;
+
+        const classProbabilities =
+          pothole.class_probabilities &&
+          typeof pothole.class_probabilities === "object" &&
+          !Array.isArray(pothole.class_probabilities)
+            ? pothole.class_probabilities
+            : {};
+
+        const boundingBox =
+          Array.isArray(pothole.bounding_box) &&
+          pothole.bounding_box.length === 4 &&
+          pothole.bounding_box.every(
+            (value) => Number.isFinite(Number(value))
+          )
+            ? pothole.bounding_box.map(Number)
+            : [];
+
+        imageResult.potholes.push({
+          potholeNumber:
+            Number(pothole.pothole_number) || potholeIndex + 1,
+
+          detectionConfidence:
+            Number.isFinite(detectionConfidence)
+              ? detectionConfidence
+              : null,
+
+          classificationConfidence:
+            Number.isFinite(classificationConfidence)
+              ? classificationConfidence
+              : null,
+
+          imageSeverityEstimate: label,
+
+          mappedSeverity,
+
+          confidenceAccepted,
+
+          classProbabilities,
+
+          boundingBox,
+        });
+
+        // Only accepted predictions can influence complaint severity.
+        if (!confidenceAccepted) {
+          continue;
+        }
+
+        // Keep the highest accepted severity across all images.
+        if (
+          !highestSeverity ||
+          SEVERITY_RANK[mappedSeverity] >
+            SEVERITY_RANK[highestSeverity]
+        ) {
+          highestSeverity = mappedSeverity;
+        }
+
+        highestConfidence = Math.max(
+          highestConfidence,
+          classificationConfidence
+        );
+      }
+    } catch (error) {
+      const isTimeout =
+        error.name === "TimeoutError" ||
+        error.name === "AbortError";
+
+      imageResult.status = isTimeout
+        ? "SKIPPED_TIMEOUT"
+        : "FAILED";
+
+      imageResult.error =
+        error.message || "Image analysis failed.";
+
+      analysisErrors.push(
+        `Image ${index + 1}: ${imageResult.error}`
+      );
+
+      console.warn(
+        `Pothole image analysis failed for image ${index + 1}:`,
+        imageResult.error
+      );
+    }
+
+    totalDetections += imageResult.detectionCount;
+
+    result.images.push(imageResult);
+  }
+
+  result.available = successfulAnalyses > 0;
+
+  result.processedImageCount = successfulAnalyses;
+
+  result.detectionCount = totalDetections;
+
+  result.predictedSeverity = highestSeverity;
+
+  result.confidence =
+    highestConfidence > 0
+      ? highestConfidence
+      : null;
+
+  // Determine the overall assessment status.
+  if (successfulAnalyses === 0) {
+    result.status = "FAILED";
+  } else if (successfulAnalyses < images.length) {
+    result.status = "PARTIAL";
+  } else if (totalDetections === 0) {
+    result.status = "NO_POTHOLE_DETECTED";
+  } else {
+    result.status = "COMPLETED";
+  }
+
+  result.error = analysisErrors.join(" ").slice(0, 1000);
+
+  if (highestSeverity) {
+    result.reason =
+      "Pothole severity estimated using the image detector and classifier.";
+  } else if (
+    successfulAnalyses > 0 &&
+    totalDetections > 0
+  ) {
+    result.reason =
+      "Potholes were detected, but no sufficiently confident severity prediction was available.";
+  } else if (successfulAnalyses > 0) {
+    result.reason =
+      "Images were analyzed successfully, but no potholes were detected.";
+  } else {
+    result.reason =
+      "Image analysis failed. Existing text and category assessment was retained.";
+  }
+
+  return result;
 };
 
 // CREATE COMPLAINT
@@ -129,7 +434,10 @@ export const createComplaint = async (req, res, next) => {
       });
     }
 
-    if (title.trim().length > 150 || description.trim().length > 3000) {
+    if (
+      title.trim().length > 150 ||
+      description.trim().length > 3000
+    ) {
       return res.status(400).json({
         success: false,
         message: "Title or description exceeds the allowed length.",
@@ -154,7 +462,7 @@ export const createComplaint = async (req, res, next) => {
       complaintLatitude = latitude;
     }
 
-    // Multipart form fields arrive as strings. Convert them safely.
+    // Multipart form fields arrive as strings.
     if (
       complaintLongitude !== undefined &&
       complaintLongitude !== null &&
@@ -252,16 +560,16 @@ export const createComplaint = async (req, res, next) => {
       });
     }
 
-    // 5. Determine a provisional department from category routing.
-    // This is a database routing rule, not an AI-generated decision.
+    // 5. Determine provisional department from category routing.
     const routing = await resolveDepartment({
       corporationId: pmc._id,
       categoryCode: categoryCode.trim().toUpperCase(),
     });
 
-    // 6. Assess severity using category defaults and contextual rules.
-    const category = await ComplaintCategory.findById(routing.categoryId)
-      .select("code defaultSeverity");
+    // 6. Get category default severity.
+    const category = await ComplaintCategory.findById(
+      routing.categoryId
+    ).select("code defaultSeverity");
 
     if (!category) {
       return res.status(404).json({
@@ -270,45 +578,83 @@ export const createComplaint = async (req, res, next) => {
       });
     }
 
-    const severityAssessment = assessSeverity({
+    // 7. Existing text and category severity assessment.
+    const textSeverityAssessment = assessSeverity({
       categoryDefaultSeverity: category.defaultSeverity,
       title: title.trim(),
       description: description.trim(),
     });
 
-// 7. Find provisional administrative geography using GPS.
-// Administrative office, Prabhag and Zone are independently verified.
-const geographicResult = await findPMCGeographyByCoordinates(
-  complaintLongitude,
-  complaintLatitude
-);
+    let finalSeverity = textSeverityAssessment.severity;
 
-const matchedOffice = geographicResult.administrativeOffice || null;
-const matchedPrabhag = geographicResult.prabhag || null;
-const matchedZone = geographicResult.zone?._id || null;
+    // 8. Run image analysis only for pothole complaints.
+    let imageAssessment = createEmptyImageAssessment({
+      status: "NOT_REQUESTED",
+      reason: "Image analysis was not required for this category.",
+      imageCount: 0,
+    });
 
+    if (category.code === "POTHOLE") {
+      imageAssessment = await analyzePotholeImages(
+        req.verifiedImages || []
+      );
 
-const officerRecommendation = matchedOffice
-  ? await recommendEligibleOfficer({
-      corporationId: pmc._id,
-      departmentId: routing.departmentId,
-      officeId: matchedOffice._id,
-    })
-  : null;
+      const aiSeverity = imageAssessment.predictedSeverity;
 
-const recommendedOfficer =
-  officerRecommendation?.officer || null;
+      // Severity can increase based on the image estimate,
+      // but it must never be downgraded.
+      if (
+        aiSeverity &&
+        SEVERITY_RANK[aiSeverity] > SEVERITY_RANK[finalSeverity]
+      ) {
+        finalSeverity = aiSeverity;
+      }
+    }
 
-// A verified administrative-office match is sufficient for a
-// provisional office recommendation. Prabhag is not mandatory.
-const hasGeographicSuggestion = Boolean(matchedOffice);
+    // Keep the existing severity basis enum compatible with Complaint.js.
+    const severityReason = [
+      textSeverityAssessment.reason,
+      imageAssessment.predictedSeverity
+        ? `Image assessment estimated ${imageAssessment.predictedSeverity} severity.`
+        : "",
+      imageAssessment.reason,
+    ]
+      .filter(Boolean)
+      .join(" ");
 
-const recommendationStatus = hasGeographicSuggestion
-  ? "PENDING_REVIEW"
-  : "NEEDS_MANUAL_REVIEW";
+    // 9. Find provisional administrative geography using GPS.
+    const geographicResult = await findPMCGeographyByCoordinates(
+      complaintLongitude,
+      complaintLatitude
+    );
 
+    const matchedOffice =
+      geographicResult.administrativeOffice || null;
 
-    // 8. Check for possible duplicate complaints.
+    const matchedPrabhag =
+      geographicResult.prabhag || null;
+
+    const matchedZone =
+      geographicResult.zone?._id || null;
+
+    const officerRecommendation = matchedOffice
+      ? await recommendEligibleOfficer({
+          corporationId: pmc._id,
+          departmentId: routing.departmentId,
+          officeId: matchedOffice._id,
+        })
+      : null;
+
+    const recommendedOfficer =
+      officerRecommendation?.officer || null;
+
+    const hasGeographicSuggestion = Boolean(matchedOffice);
+
+    const recommendationStatus = hasGeographicSuggestion
+      ? "PENDING_REVIEW"
+      : "NEEDS_MANUAL_REVIEW";
+
+    // 10. Check for possible duplicate complaints.
     const duplicateResult = await detectPossibleDuplicate({
       corporationId: pmc._id,
       categoryId: routing.categoryId,
@@ -332,7 +678,7 @@ const recommendationStatus = hasGeographicSuggestion
           checkedAt: new Date(),
         };
 
-    // 9. Save verified image files and prepare their public URLs.
+    // 11. Save verified image files and prepare public URLs.
     const uploadsDirectory = path.resolve(
       __dirname,
       "../../uploads/complaints"
@@ -360,8 +706,7 @@ const recommendationStatus = hasGeographicSuggestion
       ...uploadedMedia,
     ];
 
-    // 10. Create complaint.
-    // IMPORTANT:
+    // 12. Create complaint.
     // Official assignment fields remain null until admin confirmation.
     const complaint = await Complaint.create({
       citizen: req.user._id,
@@ -372,7 +717,6 @@ const recommendationStatus = hasGeographicSuggestion
       corporation: pmc._id,
       category: routing.categoryId,
 
-      // These are provisional recommendations, not official assignments.
       recommendedAssignment: {
         reviewStatus: recommendationStatus,
 
@@ -381,13 +725,12 @@ const recommendationStatus = hasGeographicSuggestion
         prabhag: matchedPrabhag?._id || null,
         zone: matchedZone,
 
-       officer: recommendedOfficer?._id || null,
+        officer: recommendedOfficer?._id || null,
 
         departmentReason:
           `Department suggested through the configured category routing rule (${category.code}).`,
 
-        
-                geographyReason: [
+        geographyReason: [
           geographicResult.officeMatchMethod === "OFFICE_BOUNDARY"
             ? "Administrative office matched directly against its geographic boundary."
             : geographicResult.officeMatchMethod === "PRABHAG_BOUNDARY_RELATIONSHIP"
@@ -426,20 +769,42 @@ const recommendationStatus = hasGeographicSuggestion
       address: address?.trim() || "",
       media: finalComplaintMedia,
 
-      // No official jurisdiction or officer assignment before approval.
+      // Official assignment remains empty until administrator confirmation.
       department: null,
       prabhag: null,
       administrativeOffice: null,
       zone: null,
       assignedOfficer: null,
 
-      severity: severityAssessment.severity,
+      severity: finalSeverity,
+
       severityAssessment: {
-        level: severityAssessment.severity,
-        basis: severityAssessment.basis,
-        reason: severityAssessment.reason,
+        level: finalSeverity,
+        basis: textSeverityAssessment.basis,
+        reason: severityReason,
         assessedAt: new Date(),
         manuallyVerified: false,
+      },
+
+      // Persist the complete image assessment.
+      aiAnalysis: {
+        predictedSeverity: imageAssessment.predictedSeverity,
+        confidence: imageAssessment.confidence,
+        manuallyVerified: false,
+
+        imageAssessment: {
+          status: imageAssessment.status,
+          model: imageAssessment.model,
+          imageCount: imageAssessment.imageCount,
+          processedImageCount: imageAssessment.processedImageCount,
+          potholeCount: imageAssessment.detectionCount,
+          predictedSeverity: imageAssessment.predictedSeverity,
+          confidenceThreshold: AI_CLASSIFICATION_THRESHOLD,
+          humanVerificationRequired: true,
+          assessedAt: imageAssessment.assessedAt,
+          error: imageAssessment.error,
+          images: imageAssessment.images,
+        },
       },
 
       status: "SUBMITTED",
@@ -458,7 +823,7 @@ const recommendationStatus = hasGeographicSuggestion
 
     complaintCreated = true;
 
-    // Return populated complaint, including provisional recommendations.
+    // 13. Return populated complaint.
     const result = await Complaint.findById(complaint._id)
       .populate("citizen", "name email")
       .populate("corporation", "name code")
@@ -479,50 +844,54 @@ const recommendationStatus = hasGeographicSuggestion
         "complaintNumber title description status createdAt"
       )
       .populate(
-  "recommendedAssignment.officer",
-  "name email"
-);
+        "recommendedAssignment.officer",
+        "name email"
+      );
 
     return res.status(201).json({
       success: true,
       message:
         "Complaint submitted successfully. Assignment suggestions are awaiting administrator review.",
+
       geographicAssignment: {
-  found: hasGeographicSuggestion,
+        found: hasGeographicSuggestion,
 
-  administrativeOffice: matchedOffice
-    ? {
-        id: matchedOffice._id,
-        name: matchedOffice.name,
-        code: matchedOffice.code,
-      }
-    : null,
+        administrativeOffice: matchedOffice
+          ? {
+              id: matchedOffice._id,
+              name: matchedOffice.name,
+              code: matchedOffice.code,
+            }
+          : null,
 
-  prabhag: matchedPrabhag
-    ? {
-        id: matchedPrabhag._id,
-        name: matchedPrabhag.name,
-        number: matchedPrabhag.number,
-      }
-    : null,
+        prabhag: matchedPrabhag
+          ? {
+              id: matchedPrabhag._id,
+              name: matchedPrabhag.name,
+              number: matchedPrabhag.number,
+            }
+          : null,
 
-  zone: matchedZone
-    ? {
-        id: matchedZone,
-        name: geographicResult.zone.name,
-        code: geographicResult.zone.code,
-      }
-    : null,
+        zone: matchedZone
+          ? {
+              id: matchedZone,
+              name: geographicResult.zone.name,
+              code: geographicResult.zone.code,
+            }
+          : null,
 
-  reviewRequired: geographicResult.reviewRequired,
-  message: geographicResult.message,
-},
+        reviewRequired: geographicResult.reviewRequired,
+        message: geographicResult.message,
+      },
+
       assignmentReview: {
         status: result.recommendedAssignment.reviewStatus,
         message:
           "The complaint has not been officially assigned. An administrator must review and confirm the department, office and officer.",
       },
+
       complaint: result,
+
       duplicateCheck: {
         status: result.duplicateCheck.status,
         possibleDuplicate: result.duplicateCheck.matchedComplaint,
@@ -532,7 +901,7 @@ const recommendationStatus = hasGeographicSuggestion
       },
     });
   } catch (error) {
-    // If complaint creation failed, remove any files already written.
+    // Remove uploaded files if complaint creation failed.
     if (!complaintCreated) {
       await Promise.all(
         savedImagePaths.map((filePath) =>
