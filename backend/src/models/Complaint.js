@@ -74,6 +74,42 @@ const duplicateCheckSchema = new mongoose.Schema(
   { _id: false }
 );
 
+// Persisted geographic verification evidence.
+// These are provisional geographic findings, not official assignments.
+const geographicVerificationSchema = new mongoose.Schema(
+  {
+    found: { type: Boolean, default: false },
+
+    officeFound: { type: Boolean, default: false },
+    officeMatchMethod: { type: String, default: null },
+    officeApproximate: { type: Boolean, default: false },
+    officeAmbiguous: { type: Boolean, default: false },
+
+    prabhagFound: { type: Boolean, default: false },
+    prabhagAmbiguous: { type: Boolean, default: false },
+    prabhagOfficeConflict: { type: Boolean, default: false },
+
+    zoneFound: { type: Boolean, default: false },
+    zoneBoundaryFound: { type: Boolean, default: false },
+    zoneMatchMethod: { type: String, default: null },
+    zoneAmbiguous: { type: Boolean, default: false },
+    zoneOfficeConflict: { type: Boolean, default: false },
+
+    reviewRequired: { type: Boolean, default: true },
+    reviewReasons: {
+      type: [String],
+      default: [],
+    },
+
+    boundarySource: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+  },
+  { _id: false }
+);
+
 // Provisional suggestions. These are NOT official assignments.
 const recommendedAssignmentSchema = new mongoose.Schema(
   {
@@ -85,6 +121,11 @@ const recommendedAssignmentSchema = new mongoose.Schema(
         "APPROVED",
       ],
       default: "NEEDS_MANUAL_REVIEW",
+    },
+
+    geographicVerification: {
+      type: geographicVerificationSchema,
+      default: () => ({}),
     },
 
     department: {

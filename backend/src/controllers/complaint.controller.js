@@ -979,6 +979,31 @@ export const createComplaint = async (req, res, next) => {
       recommendedAssignment: {
         reviewStatus: recommendationStatus,
 
+        geographicVerification: {
+          found: Boolean(geographicResult.found),
+
+          officeFound: Boolean(geographicResult.officeFound),
+          officeMatchMethod: geographicResult.officeMatchMethod || null,
+          officeApproximate: Boolean(geographicResult.officeApproximate),
+          officeAmbiguous: Boolean(geographicResult.officeAmbiguous),
+
+          prabhagFound: Boolean(geographicResult.prabhagFound),
+          prabhagAmbiguous: Boolean(geographicResult.prabhagAmbiguous),
+          prabhagOfficeConflict: Boolean(
+            geographicResult.prabhagOfficeConflict
+          ),
+
+          zoneFound: Boolean(geographicResult.zoneFound),
+          zoneBoundaryFound: Boolean(geographicResult.zoneBoundaryFound),
+          zoneMatchMethod: geographicResult.zoneMatchMethod || null,
+          zoneAmbiguous: Boolean(geographicResult.zoneAmbiguous),
+          zoneOfficeConflict: Boolean(geographicResult.zoneOfficeConflict),
+
+          reviewRequired: Boolean(geographicResult.reviewRequired),
+          reviewReasons: geographicResult.reviewReasons || [],
+          boundarySource: geographicResult.boundarySource || "",
+        },
+
         department: routing.departmentId,
         administrativeOffice: matchedOffice?._id || null,
         prabhag: matchedPrabhag?._id || null,

@@ -1464,6 +1464,21 @@ export default function AdminDashboard({
       (media) => media.mediaType !== "IMAGE"
     ) || [];
 
+  const imageAssessment =
+    selectedComplaint?.aiAnalysis?.imageAssessment;
+
+  const assessmentImages =
+    Array.isArray(imageAssessment?.images)
+      ? imageAssessment.images
+      : [];
+
+  const garbageCategoryCounts =
+    imageAssessment?.garbageCategoryCounts &&
+    typeof imageAssessment.garbageCategoryCounts === "object" &&
+    !Array.isArray(imageAssessment.garbageCategoryCounts)
+      ? Object.entries(imageAssessment.garbageCategoryCounts)
+      : [];
+
   const suggestedAssignment =
     assignmentComplaint?.recommendedAssignment || {};
 
@@ -2446,14 +2461,23 @@ export default function AdminDashboard({
 
               <div>
                 <strong>GPS Coordinates</strong>
-                <p>
-                  {selectedComplaint.location
-                    ?.coordinates
-                    ? selectedComplaint.location.coordinates.join(
-                        ", "
-                      )
-                    : "Not available"}
-                </p>
+                {Array.isArray(
+                  selectedComplaint.location?.coordinates
+                ) &&
+                selectedComplaint.location.coordinates.length === 2 ? (
+                  <>
+                    <p>
+                      Latitude:{" "}
+                      {selectedComplaint.location.coordinates[1]}
+                    </p>
+                    <p>
+                      Longitude:{" "}
+                      {selectedComplaint.location.coordinates[0]}
+                    </p>
+                  </>
+                ) : (
+                  <p>Not available</p>
+                )}
               </div>
             </div>
 
@@ -2505,6 +2529,173 @@ export default function AdminDashboard({
                 )}
               </div>
             )}
+
+            {/* GEOGRAPHIC VERIFICATION */}
+
+            <div className="admin-detail-description admin-geographic-verification">
+              <h3>Geographic Verification</h3>
+
+              {(() => {
+                const geo =
+                  selectedComplaint.recommendedAssignment
+                    ?.geographicVerification;
+
+                if (!geo) {
+                  return (
+                    <p className="admin-geo-unavailable">
+                      Structured geographic verification data is not
+                      available for this complaint. This may be an older
+                      complaint created before geographic verification
+                      details were persisted.
+                    </p>
+                  );
+                }
+
+                const officeStatus = geo.officeAmbiguous
+                  ? "Ambiguous boundary"
+                  : geo.officeFound
+                    ? "Direct boundary match"
+                    : geo.officeMatchMethod ===
+                        "PRABHAG_BOUNDARY_RELATIONSHIP"
+                      ? "Suggested through Prabhag"
+                      : "No direct office match";
+
+                const prabhagStatus = geo.prabhagOfficeConflict
+                  ? "Office conflict"
+                  : geo.prabhagAmbiguous
+                    ? "Ambiguous boundary"
+                    : geo.prabhagFound
+                      ? "Boundary matched"
+                      : "No unambiguous match";
+
+                const zoneStatus = geo.zoneAmbiguous
+                  ? "Ambiguous boundary"
+                  : geo.zoneOfficeConflict
+                    ? "Zone-office conflict"
+                    : geo.zoneBoundaryFound
+                      ? "Direct boundary match"
+                      : geo.zoneMatchMethod ===
+                          "ADMINISTRATIVE_OFFICE_RELATIONSHIP"
+                        ? "Office relationship fallback"
+                        : "No Zone match";
+
+                const statusClass = (needsReview, matched) =>
+                  needsReview
+                    ? "admin-geo-status admin-geo-status--warning"
+                    : matched
+                      ? "admin-geo-status admin-geo-status--success"
+                      : "admin-geo-status admin-geo-status--neutral";
+
+                return (
+                  <>
+                    <div className="admin-geo-grid">
+                      <div className="admin-geo-card">
+                        <strong>Administrative Office</strong>
+                        <span className={statusClass(
+                          geo.officeAmbiguous ||
+                            geo.officeApproximate ||
+                            !geo.officeFound,
+                          geo.officeFound
+                        )}>
+                          {officeStatus}
+                        </span>
+                        <p>
+                          {geo.officeAmbiguous
+                            ? "Multiple office boundaries matched."
+                            : geo.officeFound
+                              ? "Complaint coordinates matched an office boundary."
+                              : geo.officeApproximate
+                                ? "Office suggestion comes from the matched Prabhag."
+                                : "No direct office boundary match was established."}
+                        </p>
+                      </div>
+
+                      <div className="admin-geo-card">
+                        <strong>Prabhag</strong>
+                        <span className={statusClass(
+                          geo.prabhagOfficeConflict ||
+                            geo.prabhagAmbiguous ||
+                            !geo.prabhagFound,
+                          geo.prabhagFound
+                        )}>
+                          {prabhagStatus}
+                        </span>
+                        <p>
+                          {geo.prabhagOfficeConflict
+                            ? "The matched Prabhag belongs to a different administrative office."
+                            : geo.prabhagAmbiguous
+                              ? "Multiple Prabhag boundaries matched."
+                              : geo.prabhagFound
+                                ? "An unambiguous Prabhag match was established."
+                                : "No usable Prabhag boundary match was established."}
+                        </p>
+                      </div>
+
+                      <div className="admin-geo-card">
+                        <strong>Zone</strong>
+                        <span className={statusClass(
+                          geo.zoneAmbiguous ||
+                            geo.zoneOfficeConflict ||
+                            (!geo.zoneFound && !geo.zoneMatchMethod),
+                          geo.zoneFound && !geo.zoneOfficeConflict
+                        )}>
+                          {zoneStatus}
+                        </span>
+                        <p>
+                          {geo.zoneAmbiguous
+                            ? "Multiple Zone boundaries matched."
+                            : geo.zoneOfficeConflict
+                              ? "GPS-matched Zone differs from the office-linked Zone."
+                              : geo.zoneBoundaryFound
+                                ? "Zone matched using its geographic boundary."
+                                : geo.zoneMatchMethod ===
+                                    "ADMINISTRATIVE_OFFICE_RELATIONSHIP"
+                                  ? "Zone was suggested through the office relationship."
+                                  : "No usable Zone match was established."}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className={
+                      geo.reviewRequired
+                        ? "admin-geo-review admin-geo-review--warning"
+                        : "admin-geo-review admin-geo-review--success"
+                    }>
+                      <strong>
+                        {geo.reviewRequired
+                          ? "Administrator verification required"
+                          : "No geographic review flags detected"}
+                      </strong>
+
+                      {geo.reviewRequired && (
+                        <p>
+                          Geographic suggestions are provisional.
+                          Verify the jurisdiction before confirming assignment.
+                        </p>
+                      )}
+                    </div>
+
+                    {Array.isArray(geo.reviewReasons) &&
+                      geo.reviewReasons.length > 0 && (
+                        <div className="admin-geo-reasons">
+                          <strong>Verification findings</strong>
+                          <ul>
+                            {geo.reviewReasons.map((reason, index) => (
+                              <li key={index}>{reason}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+
+                    {geo.boundarySource && (
+                      <p className="admin-geo-source">
+                        Geographic data source: {geo.boundarySource}
+                      </p>
+                    )}
+                  </>
+                );
+              })()}
+            </div>
 
             {/* DESCRIPTION */}
 
@@ -2566,6 +2757,197 @@ export default function AdminDashboard({
                 </a>
               ))}
             </div>
+
+            {/* AI IMAGE ASSESSMENT */}
+
+            {imageAssessment?.status &&
+              imageAssessment.status !== "NOT_REQUESTED" && (
+              <section className="admin-ai-assessment">
+                <div className="admin-ai-heading">
+                  <div>
+                    <h3>AI Image Assessment</h3>
+                    <p>
+                      {imageAssessment.model || "Image analysis service"}
+                    </p>
+                  </div>
+
+                  <span className={`admin-ai-status status-${imageAssessment.status.toLowerCase()}`}>
+                    {imageAssessment.status.replaceAll("_", " ")}
+                  </span>
+                </div>
+
+                <div className="admin-ai-stats">
+                  <div>
+                    <span>Images processed</span>
+                    <strong>
+                      {imageAssessment.processedImageCount || 0}
+                      {" / "}
+                      {imageAssessment.imageCount || 0}
+                    </strong>
+                  </div>
+
+                  <div>
+                    <span>Raw garbage detections</span>
+                    <strong>
+                      {imageAssessment.garbageDetectionCount || 0}
+                    </strong>
+                  </div>
+
+                  <div>
+                    <span>Passed provisional threshold</span>
+                    <strong>
+                      {imageAssessment.acceptedGarbageDetectionCount || 0}
+                    </strong>
+                  </div>
+
+                  {imageAssessment.predictedSeverity && (
+                    <div>
+                      <span>AI pothole severity estimate</span>
+                      <strong>
+                        {imageAssessment.predictedSeverity}
+                      </strong>
+                    </div>
+                  )}
+                </div>
+
+                {typeof imageAssessment.garbageConfidenceThreshold === "number" && (
+                  <p className="admin-ai-threshold">
+                    Garbage detection threshold: at least{" "}
+                    {(imageAssessment.garbageConfidenceThreshold * 100).toFixed(0)}%
+                  </p>
+                )}
+
+                {garbageCategoryCounts.length > 0 && (
+                  <div className="admin-ai-categories">
+                    <strong>Detected object categories</strong>
+                    <div>
+                      {garbageCategoryCounts.map(([label, count]) => (
+                        <span key={label}>
+                          {label}: {count}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {imageAssessment.reason && (
+                  <p className="admin-ai-reason">
+                    {imageAssessment.reason}
+                  </p>
+                )}
+
+                {imageAssessment.error && (
+                  <p className="admin-ai-error">
+                    {imageAssessment.error}
+                  </p>
+                )}
+
+                {assessmentImages.length > 0 && (
+                  <div className="admin-ai-image-results">
+                    <strong>Per-image detection results</strong>
+
+                    {assessmentImages.map((imageResult, index) => (
+                      <div
+                        className="admin-ai-image-result"
+                        key={imageResult.imageNumber || index}
+                      >
+                        <div className="admin-ai-image-title">
+                          <strong>
+                            Image {imageResult.imageNumber || index + 1}
+                          </strong>
+                          <span>{imageResult.status?.replaceAll("_", " ")}</span>
+                        </div>
+
+                        {Array.isArray(imageResult.garbageDetections) &&
+                          imageResult.garbageDetections.map((detection, detectionIndex) => (
+                            <div
+                              className="admin-ai-detection"
+                              key={`garbage-${detection.detectionNumber || detectionIndex}`}
+                            >
+                              <strong>{detection.label || "Unknown object"}</strong>
+
+                              <span>
+                                Confidence:{" "}
+                                {typeof detection.confidence === "number"
+                                  ? `${(detection.confidence * 100).toFixed(2)}%`
+                                  : "Unavailable"}
+                              </span>
+
+                              <span>
+                                Threshold result:{" "}
+                                {detection.confidenceAccepted
+                                  ? "Passed"
+                                  : "Below threshold"}
+                              </span>
+
+                              {typeof detection.areaRatioPercent === "number" && (
+                                <span>
+                                  Image area covered: {detection.areaRatioPercent.toFixed(2)}%
+                                </span>
+                              )}
+
+                              {Array.isArray(detection.boundingBox) &&
+                                detection.boundingBox.length === 4 && (
+                                <small>
+                                  Bounding box: {detection.boundingBox.join(", ")}
+                                </small>
+                              )}
+                            </div>
+                          ))}
+
+                        {Array.isArray(imageResult.potholes) &&
+                          imageResult.potholes.map((pothole, potholeIndex) => (
+                            <div
+                              className="admin-ai-detection"
+                              key={`pothole-${pothole.potholeNumber || potholeIndex}`}
+                            >
+                              <strong>
+                                {pothole.imageSeverityEstimate || "Pothole detected"}
+                              </strong>
+
+                              <span>
+                                Classification confidence:{" "}
+                                {typeof pothole.classificationConfidence === "number"
+                                  ? `${(pothole.classificationConfidence * 100).toFixed(2)}%`
+                                  : "Unavailable"}
+                              </span>
+
+                              <span>
+                                Threshold result:{" "}
+                                {pothole.confidenceAccepted
+                                  ? "Passed"
+                                  : "Below threshold"}
+                              </span>
+                            </div>
+                          ))}
+
+                        {imageResult.error && (
+                          <p className="admin-ai-error">
+                            {imageResult.error}
+                          </p>
+                        )}
+
+                        {["COMPLETED", "NO_GARBAGE_DETECTED", "NO_POTHOLE_DETECTED"].includes(
+                          imageResult.status
+                        ) &&
+                          imageResult.garbageDetectionCount === 0 &&
+                          (!imageResult.potholes || imageResult.potholes.length === 0) && (
+                            <p>No objects detected in this image.</p>
+                          )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {imageAssessment.humanVerificationRequired && (
+                  <div className="admin-ai-warning">
+                    Human verification required. Passing the confidence
+                    threshold does not establish that a detection is correct.
+                    Review the original uploaded image before taking action.
+                  </div>
+                )}
+              </section>
+            )}
 
             {/* STATUS HISTORY */}
 
